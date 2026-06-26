@@ -1,0 +1,20 @@
+[project]
+name = "tartarus-nix"
+version = "0.1.0"
+description = "A Nix-defined containment runtime for auditable agents."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.15.20",
+    "ty>=0.0.55",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

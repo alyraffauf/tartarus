@@ -1,0 +1,19 @@
+# Local environment / secrets — never commit (direnv loads these locally)
+.envrc
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local harness audit logs
+.tartarus/
+
+# Nix
+result
+result-*
