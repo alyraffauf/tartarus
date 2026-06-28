@@ -11,6 +11,7 @@ grants skip bwrap entirely after policy approval, but still use the shell PATH.
 """
 
 import asyncio
+import codecs
 import os
 import signal
 import shlex
@@ -29,6 +30,7 @@ from tartarus.network_proxy import FilteringProxy
 
 DEFAULT_JAIL_TIMEOUT_SECONDS = 30
 TIMEOUT_EXIT_CODE = 124  # matches coreutils `timeout`
+OUTPUT_READ_CHUNK_BYTES = 16 * 1024
 
 _STRICT = ConfigDict(frozen=True, extra="forbid", strict=True)
 
@@ -384,17 +386,57 @@ async def _pump(
     parts: list[str],
     output_callback: Callable[[str], None] | None,
 ) -> None:
-    """Forward one pipe to `parts` line by line, mirroring to the callback."""
+    """Forward one pipe to `parts`, mirroring complete lines when possible."""
     if stream is None:
         return
+
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    pending = b""
+
     while True:
-        line = await stream.readline()
-        if not line:
+        chunk = await stream.read(OUTPUT_READ_CHUNK_BYTES)
+        if not chunk:
+            if pending:
+                _emit_output(
+                    decoder.decode(pending, final=False),
+                    parts,
+                    output_callback,
+                )
+            remaining = decoder.decode(b"", final=True)
+            if remaining:
+                _emit_output(remaining, parts, output_callback)
             return
-        text = line.decode(errors="replace")
-        parts.append(text)
-        if output_callback is not None:
-            output_callback(text)
+
+        pending += chunk
+        pending = _emit_complete_lines(pending, decoder, parts, output_callback)
+        if len(pending) >= OUTPUT_READ_CHUNK_BYTES:
+            _emit_output(decoder.decode(pending, final=False), parts, output_callback)
+            pending = b""
+
+
+def _emit_complete_lines(
+    pending: bytes,
+    decoder: codecs.IncrementalDecoder,
+    parts: list[str],
+    output_callback: Callable[[str], None] | None,
+) -> bytes:
+    while True:
+        newline_index = pending.find(b"\n")
+        if newline_index < 0:
+            return pending
+        line = pending[: newline_index + 1]
+        pending = pending[newline_index + 1 :]
+        _emit_output(decoder.decode(line, final=False), parts, output_callback)
+
+
+def _emit_output(
+    text: str,
+    parts: list[str],
+    output_callback: Callable[[str], None] | None,
+) -> None:
+    parts.append(text)
+    if output_callback is not None:
+        output_callback(text)
 
 
 async def _kill_and_drain(

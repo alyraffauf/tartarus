@@ -338,6 +338,25 @@ def test_exec_streams_unrestricted_output_lines(tmp_path):
     assert lines == ["one\n", "two\n"]
 
 
+def test_exec_streams_unrestricted_output_without_newlines(tmp_path):
+    jail = JailBuilder(str(tmp_path), "/unused/bin")
+    spec = jail.build(Grant(unrestricted=True))
+    lines: list[str] = []
+    payload = ("x" * 70_000) + "é"
+    code = f"import sys; sys.stdout.write({payload!r}); sys.stdout.flush()"
+
+    result = _exec(
+        jail,
+        spec,
+        f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}",
+        output_callback=lines.append,
+    )
+
+    assert result.code == 0
+    assert result.stdout == payload
+    assert "".join(lines) == payload
+
+
 _SLOW_PROGRAM = (
     "import time; "
     "print('started', flush=True); "
