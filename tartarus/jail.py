@@ -21,6 +21,10 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from queue import Empty, Queue
+from typing import Literal
+
+from pydantic import ConfigDict, ValidationError, field_validator
+from pydantic.dataclasses import dataclass as strict_dataclass
 
 from tartarus.manifest import Grant
 from tartarus.network_proxy import FilteringProxy
@@ -28,12 +32,14 @@ from tartarus.network_proxy import FilteringProxy
 DEFAULT_JAIL_TIMEOUT_SECONDS = 30
 TIMEOUT_EXIT_CODE = 124  # matches coreutils `timeout`
 
+_STRICT = ConfigDict(frozen=True, extra="forbid", strict=True)
+
 
 class JailError(Exception):
     """Raised when a jail cannot be built or run as requested."""
 
 
-@dataclass(frozen=True)
+@strict_dataclass(config=_STRICT)
 class ExecResult:
     code: int
     stdout: str
@@ -58,7 +64,7 @@ class BackgroundHandle:
     proxy: FilteringProxy | None = None
 
 
-@dataclass(frozen=True)
+@strict_dataclass(config=_STRICT)
 class JailSpec:
     work_tree: str
     shell_path: str
@@ -71,8 +77,21 @@ class JailSpec:
     # declared closure (PLAN.md §13).
     bind_paths: list[str] = field(default_factory=list)
     allowed_hosts: list[str] = field(default_factory=list)
-    network: str = "none"  # "none" | "proxy"
+    network: Literal["none", "proxy"] = "none"
     unrestricted: bool = False
+
+    @field_validator("writable")
+    @classmethod
+    def _validate_writable(cls, paths: list[str]) -> list[str]:
+        # Belt-and-suspenders with Grant._validate_writable: JailBuilder.build
+        # always feeds an already-validated Grant, but a JailSpec built directly
+        # must still refuse anything that escapes the work tree.
+        for path in paths:
+            if path.startswith("/"):
+                raise ValueError(f"writable path '{path}' must be relative")
+            if ".." in path.split("/"):
+                raise ValueError(f"writable path '{path}' escapes the work tree")
+        return paths
 
 
 class JailBuilder:
@@ -94,17 +113,20 @@ class JailBuilder:
         self._shell_closure = list(shell_closure or [])
 
     def build(self, grant: Grant) -> JailSpec:
-        return JailSpec(
-            work_tree=self._work_tree,
-            shell_path=self._shell_path,
-            base_env=self._base_env,
-            writable=_validated_writable_paths(grant.writable),
-            extra_path=list(grant.package_bins),
-            bind_paths=_dedup(self._shell_closure + list(grant.closure_paths)),
-            allowed_hosts=list(grant.allowed_hosts),
-            network="proxy" if grant.allowed_hosts else "none",
-            unrestricted=grant.unrestricted,
-        )
+        try:
+            return JailSpec(
+                work_tree=self._work_tree,
+                shell_path=self._shell_path,
+                base_env=self._base_env,
+                writable=list(grant.writable),
+                extra_path=list(grant.package_bins),
+                bind_paths=_dedup(self._shell_closure + list(grant.closure_paths)),
+                allowed_hosts=list(grant.allowed_hosts),
+                network="proxy" if grant.allowed_hosts else "none",
+                unrestricted=grant.unrestricted,
+            )
+        except ValidationError as error:
+            raise JailError(str(error)) from error
 
     def exec(
         self,
@@ -455,15 +477,6 @@ def _dedup(paths: list[str]) -> list[str]:
             seen.add(path)
             unique.append(path)
     return unique
-
-
-def _validated_writable_paths(paths: list[str]) -> list[str]:
-    for path in paths:
-        if path.startswith("/"):
-            raise JailError(f"writable path '{path}' must be relative")
-        if ".." in path.split("/"):
-            raise JailError(f"writable path '{path}' escapes the work tree")
-    return list(paths)
 
 
 def _host_writable_path(work_tree: str, relative_path: str) -> str:

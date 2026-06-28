@@ -13,19 +13,24 @@ defaulting to No. In headless mode there is no human, so every ask-* policy deni
 
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from typing import Literal
+
+from pydantic import ConfigDict
+from pydantic.dataclasses import dataclass
 
 from tartarus.manifest import Capability, Grant
 
 # Decides one prompt: (capability, arguments, interpolated command) -> approved?
 PromptFn = Callable[[Capability, dict, str], bool]
 
+_STRICT = ConfigDict(frozen=True, extra="forbid", strict=True)
 
-@dataclass(frozen=True)
+
+@dataclass(config=_STRICT)
 class Decision:
     allowed: bool
     reason: str
-    approver: str  # "auto" | "deny" | "session" | "human" | "headless"
+    approver: Literal["auto", "deny", "session", "human", "headless", "broker"]
 
 
 class PolicyEngine:
