@@ -20,7 +20,7 @@ from typing_extensions import Self
 class Grant(BaseModel):
     """The host reach a capability opens. Empty means "nothing beyond the shell"."""
 
-    model_config = ConfigDict(frozen=True, strict=True)
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     package_bins: list[str] = Field(default_factory=list)
     allowed_hosts: list[str] = Field(default_factory=list)
