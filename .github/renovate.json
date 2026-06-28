@@ -1,0 +1,21 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "nix": {
+    "enabled": true
+  },
+  "packageRules": [
+    {
+      "description": "Group GitHub Actions updates into a single PR",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions"
+    },
+    {
+      "description": "Group Nix flake input updates into a single PR",
+      "matchManagers": ["nix"],
+      "groupName": "nix-flake-inputs"
+    }
+  ]
+}
