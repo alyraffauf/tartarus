@@ -7,10 +7,18 @@ Zen so a single env var (OPENCODE_API_KEY) yields a working setup.
 
 from __future__ import annotations
 
-import json
 import os
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing_extensions import Self
 
 from tartarus.manifest import Manifest, Sampling
 
@@ -21,8 +29,9 @@ DEFAULT_MODEL = "glm-5.2"
 # tunes its own feel via the `model.sampling` block (see agent.nix).
 DEFAULT_MAX_TOKENS = 16384
 DEFAULT_STATE_DIR = ".tartarus"
-DEFAULT_AUDIT_PATH = f"{DEFAULT_STATE_DIR}/audit.jsonl"
-DEFAULT_SESSIONS_DIR = f"{DEFAULT_STATE_DIR}/sessions"
+# Leaf names under <work_tree>/.tartarus, shared by every path-deriving call site.
+AUDIT_LOG_LEAF = "audit.jsonl"
+SESSIONS_LEAF = "sessions"
 DEFAULT_OUTPUT_TRUNCATE_CHARS = 10_000
 # `path:` copies the directory regardless of git tracking, which keeps local
 # capability edits visible before they are committed.
@@ -43,14 +52,22 @@ class ConfigError(Exception):
     """Raised when required configuration is missing or invalid."""
 
 
-class Config(BaseModel):
-    """Mutable harness config built from environment variables."""
+class Config(BaseSettings):
+    """Harness config, loaded from TARTARUS_* environment variables (PLAN.md §9).
 
-    model_config = ConfigDict(extra="forbid", strict=True)
+    Each field reads from TARTARUS_<FIELD>; a few keep legacy env names via an
+    explicit alias. Runtime fields (provider/base_url/model/max_tokens) stay None
+    when unset so the agent's `model` block can supply them (resolve_runtime); an
+    explicit env value still wins.
+    """
 
-    # The runtime fields are None when their env var is unset, so the agent's
-    # `model` block can supply the value (resolve_runtime). An explicit env var
-    # still wins. api_key is the exception: env-only, since it is a secret.
+    model_config = SettingsConfigDict(
+        env_prefix="TARTARUS_", extra="ignore", populate_by_name=True
+    )
+
+    # The one secret: env-only, accepted under either the TARTARUS_ name or the
+    # provider's own OPENCODE_API_KEY. Empty is allowed here so non-auth paths can
+    # build a Config; load_config enforces a non-empty key (fail closed).
     api_key: str = ""
     provider: str | None = None
     base_url: str | None = None
@@ -65,98 +82,80 @@ class Config(BaseModel):
     flake_ref: str = DEFAULT_FLAKE_REF
     # A realized agent bundle store path (e.g. received via `nix copy`). When set,
     # the harness loads it directly and never touches the flake (PLAN.md §14).
-    bundle_path: str = ""
+    bundle_path: str = Field("", validation_alias=AliasChoices("TARTARUS_BUNDLE"))
     # Agent name under #agents.<system> to load.
-    agent_name: str = DEFAULT_AGENT_NAME
+    agent_name: str = Field(
+        DEFAULT_AGENT_NAME, validation_alias=AliasChoices("TARTARUS_AGENT")
+    )
     # When true there is no human to approve ask-* policies, so they fail closed.
     headless: bool = False
-    # Append-only JSONL audit log for brokered tool calls.
+    # Append-only JSONL audit log for brokered tool calls. Empty -> derived below.
     audit_path: str = ""
     # Directory holding per-conversation transcript files (<id>.jsonl).
-    session_dir: str = ""
+    session_dir: str = Field("", validation_alias=AliasChoices("TARTARUS_SESSIONS_DIR"))
     output_truncate: int = DEFAULT_OUTPUT_TRUNCATE_CHARS
+
+    @model_validator(mode="after")
+    def _derive_state_paths(self) -> Self:
+        # The audit log and sessions dir default under <work_tree>/.tartarus unless
+        # the environment supplied an explicit path.
+        if not self.audit_path:
+            self.audit_path = _default_state_path(self.work_tree, AUDIT_LOG_LEAF)
+        if not self.session_dir:
+            self.session_dir = _default_state_path(self.work_tree, SESSIONS_LEAF)
+        return self
 
 
 def session_dir_from_env() -> str:
     """Resolve the sessions directory from the environment, no API key required.
 
-    Shared by load_config and the CLI's read-only `--list-sessions` path.
+    Shared by load_config (via Config) and the CLI's read-only `--list-sessions`
+    path, which runs before any API key is required, so it cannot build a Config.
     """
-    work_tree = _read_env("WORK_TREE", os.getcwd()) or os.getcwd()
-    return _read_env("SESSIONS_DIR", _default_state_path(work_tree, "sessions")) or ""
-
-
-def _read_env(name: str, default: str | None = None) -> str | None:
-    return os.environ.get(f"TARTARUS_{name}", default)
-
-
-def _read_bool_env(name: str) -> bool:
-    return (_read_env(name, "") or "").lower() in {"1", "true", "yes"}
+    work_tree = os.environ.get("TARTARUS_WORK_TREE") or os.getcwd()
+    return os.environ.get("TARTARUS_SESSIONS_DIR") or _default_state_path(
+        work_tree, SESSIONS_LEAF
+    )
 
 
 def _default_state_path(work_tree: str, leaf: str) -> str:
     return os.path.join(work_tree, DEFAULT_STATE_DIR, leaf)
 
 
-def _read_api_key() -> str:
-    for variable in API_KEY_ENV_VARS:
-        value = os.environ.get(variable)
-        if value:
-            return value
-    return ""
-
-
-def _read_extra_headers() -> dict[str, str] | None:
-    raw_headers = _read_env("EXTRA_HEADERS")
-    if not raw_headers:
-        return None
-    try:
-        parsed = json.loads(raw_headers)
-    except json.JSONDecodeError as error:
-        raise ConfigError(f"TARTARUS_EXTRA_HEADERS must be JSON: {error}") from error
-    if not isinstance(parsed, dict):
-        raise ConfigError("TARTARUS_EXTRA_HEADERS must be a JSON object")
-    return {str(key): str(value) for key, value in parsed.items()}
-
-
 def load_config() -> Config:
-    """Build a Config from the environment, applying defaults.
+    """Build a Config from the environment.
 
-    Fails closed: a missing API key raises ConfigError rather than attempting an
-    unauthenticated request.
+    Fails closed: a missing API key or malformed value raises ConfigError rather
+    than attempting an unauthenticated or misconfigured request.
     """
-    api_key = _read_api_key()
-    if not api_key:
-        names = " or ".join(API_KEY_ENV_VARS)
-        raise ConfigError(f"no API key found; set {names}")
+    try:
+        config = Config()
+    except ValidationError as error:
+        raise _config_error(error) from error
+    if not config.api_key:
+        # TARTARUS_API_KEY is read via env_prefix; fall back to the alternates here.
+        for variable in API_KEY_ENV_VARS:
+            value = os.environ.get(variable, "")
+            if value:
+                config.api_key = value
+                break
+    if not config.api_key:
+        raise ConfigError(f"no API key found; set {' or '.join(API_KEY_ENV_VARS)}")
+    return config
 
-    work_tree = _read_env("WORK_TREE", os.getcwd()) or os.getcwd()
-    default_audit_path = _default_state_path(work_tree, "audit.jsonl")
-    audit_path = _read_env("AUDIT_PATH", default_audit_path) or default_audit_path
-    session_dir = session_dir_from_env()
 
-    raw_max_tokens = _read_env("MAX_TOKENS")
-    return Config(
-        # Left None when unset so the agent's profile can supply them; an explicit
-        # value here still overrides the profile (resolve_runtime).
-        provider=_read_env("PROVIDER"),
-        base_url=_read_env("BASE_URL"),
-        api_key=api_key,
-        model=_read_env("MODEL"),
-        max_tokens=int(raw_max_tokens) if raw_max_tokens else None,
-        extra_headers=_read_extra_headers(),
-        work_tree=work_tree,
-        flake_ref=_read_env("FLAKE_REF", DEFAULT_FLAKE_REF) or DEFAULT_FLAKE_REF,
-        bundle_path=_read_env("BUNDLE", "") or "",
-        agent_name=_read_env("AGENT", DEFAULT_AGENT_NAME) or DEFAULT_AGENT_NAME,
-        headless=_read_bool_env("HEADLESS"),
-        audit_path=audit_path,
-        session_dir=session_dir,
-        output_truncate=int(
-            _read_env("OUTPUT_TRUNCATE", str(DEFAULT_OUTPUT_TRUNCATE_CHARS))
-            or DEFAULT_OUTPUT_TRUNCATE_CHARS
-        ),
+def _config_error(error: ValidationError) -> ConfigError:
+    """Translate a settings ValidationError into a user-facing ConfigError."""
+    failed = {str(location) for entry in error.errors() for location in entry["loc"]}
+    if "extra_headers" in failed:
+        return ConfigError("TARTARUS_EXTRA_HEADERS must be a JSON object")
+    # loc + msg only: ValidationError's str/input fields echo the offending value,
+    # which would leak secrets like api_key into logs.
+    details = "; ".join(
+        f"{' -> '.join(str(loc) for loc in entry['loc'])}: {entry['msg']}"
+        for entry in error.errors()
     )
+    return ConfigError(f"invalid configuration: {details}")
 
 
 class ResolvedRuntime(BaseModel):

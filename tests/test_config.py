@@ -1,6 +1,9 @@
+import os
+
 import pytest
 
 from tartarus.config import (
+    API_KEY_ENV_VARS,
     DEFAULT_BASE_URL,
     DEFAULT_MAX_TOKENS,
     DEFAULT_MODEL,
@@ -10,6 +13,15 @@ from tartarus.config import (
     resolve_runtime,
 )
 from tartarus.manifest import Manifest, ModelConfig
+
+
+@pytest.fixture(autouse=True)
+def _clear_harness_env(monkeypatch):
+    # Config now reads ambient env (BaseSettings), so clear it for hermetic tests;
+    # each test sets only the vars it exercises.
+    for key in list(os.environ):
+        if key.startswith("TARTARUS_") or key in API_KEY_ENV_VARS:
+            monkeypatch.delenv(key, raising=False)
 
 
 def _manifest(**kwargs) -> Manifest:
