@@ -2,7 +2,7 @@
   description = "Tartarus: a Nix-defined containment runtime for auditable agents";
 
   inputs = {
-    nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
     # uv2nix turns uv.lock into a Nix Python package set, so the harness's Python
     # deps are resolved from the lockfile rather than hand-maintained.
