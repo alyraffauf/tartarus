@@ -15,18 +15,16 @@ import sys
 from collections.abc import Callable
 from typing import Literal
 
-from pydantic import ConfigDict
 from pydantic.dataclasses import dataclass
 
+from tartarus.constants import STRICT_CONFIG
 from tartarus.manifest import Capability, Grant
 
 # Decides one prompt: (capability, arguments, interpolated command) -> approved?
 PromptFn = Callable[[Capability, dict, str], bool]
 
-_STRICT = ConfigDict(frozen=True, extra="forbid", strict=True)
 
-
-@dataclass(config=_STRICT)
+@dataclass(config=STRICT_CONFIG)
 class Decision:
     allowed: bool
     reason: str

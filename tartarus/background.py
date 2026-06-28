@@ -19,10 +19,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from tartarus.audit import AuditEvent, AuditSink, NullAuditLog
+from tartarus.constants import DEFAULT_OUTPUT_TRUNCATE_CHARS
 from tartarus.jail import BackgroundHandle, ExecResult
 from tartarus.models import ToolResult
 
-DEFAULT_OUTPUT_TRUNCATE_CHARS = 10_000
 MAX_UTF8_BYTES_PER_CHAR = 4
 
 

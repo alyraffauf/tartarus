@@ -136,7 +136,7 @@ class AgentLoop:
             worker.cancel()
             try:
                 await asyncio.shield(worker)
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
             raise
         finally:

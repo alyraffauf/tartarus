@@ -22,7 +22,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
-from pydantic import ConfigDict, ValidationError, field_validator
+from pydantic import ValidationError, field_validator
+
+from tartarus.constants import STRICT_CONFIG
 from pydantic.dataclasses import dataclass as strict_dataclass
 
 from tartarus.manifest import Grant
@@ -32,14 +34,12 @@ DEFAULT_JAIL_TIMEOUT_SECONDS = 30
 TIMEOUT_EXIT_CODE = 124  # matches coreutils `timeout`
 OUTPUT_READ_CHUNK_BYTES = 16 * 1024
 
-_STRICT = ConfigDict(frozen=True, extra="forbid", strict=True)
-
 
 class JailError(Exception):
     """Raised when a jail cannot be built or run as requested."""
 
 
-@strict_dataclass(config=_STRICT)
+@strict_dataclass(config=STRICT_CONFIG)
 class ExecResult:
     code: int
     stdout: str
@@ -64,7 +64,7 @@ class BackgroundHandle:
     proxy: FilteringProxy | None = None
 
 
-@strict_dataclass(config=_STRICT)
+@strict_dataclass(config=STRICT_CONFIG)
 class JailSpec:
     work_tree: str
     shell_path: str

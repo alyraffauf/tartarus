@@ -10,7 +10,9 @@ from __future__ import annotations
 import string
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from tartarus.constants import STRICT_CONFIG
 from typing_extensions import Self
 
 
@@ -20,7 +22,7 @@ from typing_extensions import Self
 class Grant(BaseModel):
     """The host reach a capability opens. Empty means "nothing beyond the shell"."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+    model_config = STRICT_CONFIG
 
     package_bins: list[str] = Field(default_factory=list)
     allowed_hosts: list[str] = Field(default_factory=list)
@@ -75,7 +77,7 @@ class Grant(BaseModel):
 
 
 class Param(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+    model_config = STRICT_CONFIG
 
     type: Literal["string", "integer", "boolean", "array"]
     description: str = ""
@@ -103,7 +105,7 @@ class Param(BaseModel):
 
 
 class Capability(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+    model_config = STRICT_CONFIG
 
     name: str
     description: str = ""
@@ -202,7 +204,7 @@ class ModelConfig(BaseModel):
     Nix store.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+    model_config = STRICT_CONFIG
 
     base_url: str | None = None
     name: str | None = None
@@ -247,7 +249,7 @@ class ModelConfig(BaseModel):
 
 
 class Manifest(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+    model_config = STRICT_CONFIG
 
     tools: list[dict]
     capabilities: dict[str, Capability]

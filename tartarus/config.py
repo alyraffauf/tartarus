@@ -12,7 +12,6 @@ import os
 from pydantic import (
     AliasChoices,
     BaseModel,
-    ConfigDict,
     Field,
     ValidationError,
     model_validator,
@@ -20,6 +19,7 @@ from pydantic import (
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing_extensions import Self
 
+from tartarus.constants import DEFAULT_OUTPUT_TRUNCATE_CHARS, STRICT_CONFIG
 from tartarus.manifest import Manifest, Sampling
 
 DEFAULT_BASE_URL = "https://opencode.ai/zen/v1"
@@ -32,7 +32,6 @@ DEFAULT_STATE_DIR = ".tartarus"
 # Leaf names under <work_tree>/.tartarus, shared by every path-deriving call site.
 AUDIT_LOG_LEAF = "audit.jsonl"
 SESSIONS_LEAF = "sessions"
-DEFAULT_OUTPUT_TRUNCATE_CHARS = 10_000
 # `path:` copies the directory regardless of git tracking, which keeps local
 # capability edits visible before they are committed.
 DEFAULT_FLAKE_REF = "path:."
@@ -165,7 +164,7 @@ class ResolvedRuntime(BaseModel):
     otherwise the built-in default. api_key is env-only (a secret) and required.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+    model_config = STRICT_CONFIG
 
     provider_type: str
     base_url: str

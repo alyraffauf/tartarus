@@ -7,7 +7,9 @@ import os
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
+
+from tartarus.constants import STRICT_CONFIG
 
 from tartarus.jail import ExecResult
 from tartarus.manifest import Capability, Grant
@@ -22,7 +24,7 @@ class AuditError(Exception):
 class AuditEvent(BaseModel):
     """A single brokered tool call, recorded to the audit log as JSONL."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+    model_config = STRICT_CONFIG
 
     call_id: str
     tool_name: str

@@ -12,12 +12,11 @@ from collections.abc import Callable
 
 from tartarus.audit import AuditEvent, AuditSink, NullAuditLog
 from tartarus.background import BackgroundError, BackgroundRegistry
+from tartarus.constants import DEFAULT_OUTPUT_TRUNCATE_CHARS
 from tartarus.jail import JailBuilder, JailError
 from tartarus.manifest import Capability, Manifest, Param
 from tartarus.models import ToolCall, ToolResult
 from tartarus.policy import Decision, PolicyEngine
-
-DEFAULT_OUTPUT_TRUNCATE_CHARS = 10_000
 
 # Declared param type -> the Python type a valid argument must be an instance of.
 _JSON_TYPE_TO_PYTHON = {
