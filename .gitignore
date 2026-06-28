@@ -13,6 +13,7 @@ __pycache__/
 
 # Local harness audit logs
 .tartarus/
+artifacts/
 
 # Nix
 result
