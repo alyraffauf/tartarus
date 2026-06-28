@@ -19,7 +19,7 @@ Prerequisites:
 
 - Nix with flakes enabled
 - Python 3.13+ and `uv`
-- Linux with `bubblewrap` available for jailed execution
+- Linux with `bubblewrap` available for jailed execution (`x86_64-linux` or `aarch64-linux`)
 - An OpenAI-compatible chat-completions endpoint
 
 Set an API key and ask the default agent a question:

@@ -30,7 +30,6 @@
       supportedSystems = [
         "x86_64-linux"
         "aarch64-linux"
-        "aarch64-darwin"
       ];
       inherit (nixpkgs) lib;
       eachSystem = lib.genAttrs supportedSystems;
@@ -52,16 +51,14 @@
         system:
         let
           pkgs = pkgsFor system;
-          packages = { }; # optional: add this flake's own derivations when capabilities need them
         in
-        agentsLib.mkAgents { inherit pkgs packages; } (import ./agent.nix { inherit pkgs agentModules; })
+        agentsLib.mkAgents { inherit pkgs; } (import ./agent.nix { inherit pkgs agentModules; })
       );
 
       checks = eachSystem (
         system:
         let
           pkgs = pkgsFor system;
-          packages = { };
           moduleNames = [
             "bash"
             "read"
@@ -72,11 +69,11 @@
             "grep"
             "web_fetch"
           ];
-          resolvedCatalog = agentsLib.resolveCapabilities { inherit pkgs packages; } (
+          resolvedCatalog = agentsLib.resolveCapabilities { inherit pkgs; } (
             map (moduleName: agentModules.${moduleName}) moduleNames
           );
           defaultManifest =
-            (agentsLib.mkAgents { inherit pkgs packages; } (import ./agent.nix { inherit pkgs agentModules; }))
+            (agentsLib.mkAgents { inherit pkgs; } (import ./agent.nix { inherit pkgs agentModules; }))
             .default.manifest;
           catalogCapabilityNames = lib.attrNames resolvedCatalog;
           expectedCapabilityNames = [
@@ -190,5 +187,17 @@
           };
         }
       );
+
+      templates.default = {
+        path = ./templates/default;
+        description = "Minimal Tartarus agent with core tools and a dev shell";
+        welcomeText = ''
+          Your Tartarus agent is ready.
+
+            nix develop
+
+          Set TARTARUS_API_KEY (or OPENCODE_API_KEY) before running the agent.
+        '';
+      };
     };
 }
