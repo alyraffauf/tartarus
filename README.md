@@ -41,7 +41,7 @@ returns to the prompt without corrupting the transcript.
 
 ## What You Get
 
-- A realized agent bundle at `agents.<system>.<agent>.bundle` containing
+- A realized agent bundle at `agents.<system>.<agent>.config.build.bundle` containing
   `manifest.json`, baked shell PATH, CA bundle, and every referenced store path.
 - A provider-neutral agent loop for OpenAI-compatible backends.
 - Tool policies: `auto`, `ask-once`, `ask-always`, and `deny`.
@@ -64,7 +64,7 @@ runs freely.
 By default Tartarus builds and loads:
 
 ```text
-path:.#agents.<host-system>.default.bundle
+path:.#agents.<host-system>.default.config.build.bundle
 ```
 
 Select another agent from the same flake with either an env var or an inline
@@ -88,7 +88,7 @@ uv run python main.py
 Use a prebuilt/copied bundle without needing the source flake at runtime:
 
 ```sh
-nix build .#agents.x86_64-linux.default.bundle --no-link --print-out-paths
+nix build .#agents.x86_64-linux.default.config.build.bundle --no-link --print-out-paths
 nix copy --to <store-or-cache> /nix/store/...-bundle
 
 # On the receiving machine:
@@ -102,64 +102,55 @@ come from the environment.
 
 ## Defining An Agent
 
-Agents are ordinary Nix values. The reusable compiler lives in `lib/agents.nix`;
-the shared coding-agent tool catalog lives in `agentModules`, and the example
-agent is in `agent.nix`.
+Agents are small Nix module systems. The reusable compiler lives in
+`lib/agents.nix`; reusable agent modules live under `tartarus.modules`, and the
+example agent is in `agent.nix`.
 
 ```nix
 {
   inputs.tartarus.url = "github:your-org/tartarus";
   inputs.nixpkgs.follows = "tartarus/nixpkgs";
 
-  outputs = { tartarus, nixpkgs, ... }:
+  outputs = { self, tartarus, nixpkgs, ... }:
     let
       system = "x86_64-linux";
-      pkgs = import nixpkgs { inherit system; };
-
-      read_package_json = { pkgs, ... }: {
-        name = "read_package_json";
-        description = "Read package.json from the work tree.";
-        policy = "auto";
-        params = { };
-        grants.packages = [ pkgs.jq ];
-        grants.network.allowedHosts = [ ];
-        grants.writable = [ ];
-        runner = "jq . package.json";
-      };
     in
     {
-      agents.${system} = tartarus.lib.mkAgents { inherit pkgs; } {
-        default = {
-          systemPrompt = "You are a careful coding agent.";
-          shell = with pkgs; [ bash coreutils ];
-          capabilities = with tartarus.agentModules; [
-            read
-            write
-            edit
-            list
-            glob
-            grep
-            bash
-            web_fetch
-            read_package_json
-          ];
+      agents.${system}.default = tartarus.lib.tartarusAgent {
+        inherit system;
+        modules = [
+          tartarus.modules.coding
+          ({ pkgs, ... }: {
+            systemPrompt = "You are a careful coding agent.";
+            shell.packages = with pkgs; [ bash coreutils ];
 
-          model = {
-            provider = "openai-compat";
-            baseUrl = "https://opencode.ai/zen/v1";
-            name = "glm-5.2";
-            maxTokens = 32768;
-            sampling = { temperature = 0.6; };
-          };
-        };
+            capabilities.read_package_json = {
+              description = "Read package.json from the work tree.";
+              policy = "auto";
+              params = { };
+              grants.packages = [ pkgs.jq ];
+              runner = "jq . package.json";
+            };
+
+            model = {
+              provider = "openai-compat";
+              baseUrl = "https://opencode.ai/zen/v1";
+              name = "glm-5.2";
+              maxTokens = 32768;
+              sampling = { temperature = 0.6; };
+            };
+          })
+        ];
       };
+
+      packages.${system}.default = self.agents.${system}.default.config.build.bundle;
     };
 }
 ```
 
 A capability declares:
 
-- `name`, `description`, and model-facing `params`
+- the attrset key as its name, plus `description` and model-facing `params`
 - `policy`: `auto`, `ask-once`, `ask-always`, or `deny`
 - `grants.packages`: package binaries available only to that tool
 - `grants.network.allowedHosts`: proxy-allowed HTTP(S) hosts
@@ -171,9 +162,27 @@ A capability declares:
 The baseline `shell` is shared by every jailed call, so keep it small. Put
 tool-specific programs in that capability's package grants.
 
-`tartarus.agentModules` provides reusable module definitions for common
-coding-agent tools: `read`, `list`, `write`, `edit`, `glob`, `grep`, `bash`,
-and `web_fetch`. These are also the tool names exposed to the agent.
+`tartarusAgent` mirrors `nixpkgs.lib.nixosSystem`: it takes
+`{ system, modules, specialArgs }` and configures its package set through a
+NixOS-style `nixpkgs` module. `nixpkgs.hostPlatform` defaults to `system`, and
+any module may set `nixpkgs.config` (e.g. `allowUnfree`), `nixpkgs.overlays`, or
+`nixpkgs.pkgs` to override it — every module then receives the result as `pkgs`.
+
+An agent's `name` option labels its bundle derivation (`tartarus-<name>-bundle`),
+mirroring how `networking.hostName` names a NixOS system. It defaults to `agent`;
+set it per agent (conventionally matching the `agents.<system>.<name>` key) for
+descriptive, non-colliding labels in multi-agent flakes.
+
+Like `nixosSystem`, `tartarusAgent` returns the module-evaluation result —
+`config`, `options`, `pkgs`, and `extendModules` — and its build outputs live in
+the config at `config.build.{manifest,bundle,shell}` (the agent analog of
+`config.system.build.toplevel`). Hence `agents.<system>.<name>.config.build.bundle`.
+
+`tartarus.modules` is a flat catalog of ordinary agent modules. Some entries set
+one capability (`read`, `list`, `write`, `edit`, `glob`, `grep`, `bash`,
+`webFetch`), while others can set any valid agent options.
+`tartarus.modules.coding` imports the common coding set, and
+`tartarus.modules.default` aliases it.
 Task/subagent orchestration, todo state, human questions, and skill loading are
 intentionally not modeled as shell capabilities yet.
 
@@ -235,7 +244,7 @@ decision, grant delta, command, exit code, output length, and errors.
 | Path | Purpose |
 |---|---|
 | `agent.nix` | Example agent and capabilities |
-| `lib/agents.nix` | Nix compiler for `agents.<system>.<agent>.bundle` |
+| `lib/agents.nix` | Nix compiler for `agents.<system>.<agent>.config.build.bundle` |
 | `tartarus/` | Python harness: config, bundle loading, provider, loop, broker, jail |
 | `tests/` | Unit and integration tests |
 | `PLAN.md` | Architecture, contract details, and implementation history |

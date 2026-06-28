@@ -40,7 +40,7 @@ def resolve_bundle(config: Config) -> str:
         return config.bundle_path
 
     system = host_system()
-    attr = f"{config.flake_ref}#agents.{system}.{config.agent_name}.bundle"
+    attr = f"{config.flake_ref}#agents.{system}.{config.agent_name}.config.build.bundle"
     try:
         out = run_checked(["nix", "build", attr, "--no-link", "--print-out-paths"])
     except ProcessError as error:

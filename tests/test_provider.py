@@ -261,7 +261,9 @@ def test_stream_yields_text_deltas_then_turn_complete(monkeypatch):
     ]
 
     _configure_fake_stream(chunks)
-    monkeypatch.setattr("tartarus.provider.openai_compat.httpx.AsyncClient", _FakeClient)
+    monkeypatch.setattr(
+        "tartarus.provider.openai_compat.httpx.AsyncClient", _FakeClient
+    )
 
     async def collect():
         return [e async for e in provider.stream("sys", [], [])]
@@ -286,7 +288,9 @@ def test_stream_raises_on_bad_sse_chunk(monkeypatch, bad_line, expected_msg):
     provider = _provider()
 
     _configure_fake_stream([bad_line])
-    monkeypatch.setattr("tartarus.provider.openai_compat.httpx.AsyncClient", _FakeClient)
+    monkeypatch.setattr(
+        "tartarus.provider.openai_compat.httpx.AsyncClient", _FakeClient
+    )
 
     async def collect():
         return [e async for e in provider.stream("sys", [], [])]
@@ -300,7 +304,9 @@ def test_stream_raises_on_http_error(monkeypatch):
     provider = _provider()
 
     _configure_fake_stream([], status_code=500)
-    monkeypatch.setattr("tartarus.provider.openai_compat.httpx.AsyncClient", _FakeClient)
+    monkeypatch.setattr(
+        "tartarus.provider.openai_compat.httpx.AsyncClient", _FakeClient
+    )
 
     async def collect():
         return [e async for e in provider.stream("sys", [], [])]
@@ -322,7 +328,9 @@ def test_stream_passes_tool_call_deltas(monkeypatch):
     ]
 
     _configure_fake_stream(chunks)
-    monkeypatch.setattr("tartarus.provider.openai_compat.httpx.AsyncClient", _FakeClient)
+    monkeypatch.setattr(
+        "tartarus.provider.openai_compat.httpx.AsyncClient", _FakeClient
+    )
 
     async def collect():
         return [e async for e in provider.stream("sys", [], [])]

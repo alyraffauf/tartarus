@@ -6,7 +6,13 @@
     tartarus.url = "github:alyraffauf/tartarus";
   };
 
-  outputs = { nixpkgs, tartarus, self, ... }:
+  outputs =
+    {
+      nixpkgs,
+      tartarus,
+      self,
+      ...
+    }:
     let
       supportedSystems = [
         "x86_64-linux"
@@ -15,18 +21,15 @@
       forEachSystem = nixpkgs.lib.genAttrs supportedSystems;
     in
     {
-      agents = forEachSystem (
-        system:
-        let
-          pkgs = nixpkgs.legacyPackages.${system};
-        in
-        tartarus.lib.mkAgents { inherit pkgs; } (
-          import ./agent.nix {
-            inherit pkgs;
-            agentModules = tartarus.agentModules;
-          }
-        )
-      );
+      agents = forEachSystem (system: {
+        default = tartarus.lib.tartarusAgent {
+          inherit system;
+          modules = [ ./agent.nix ];
+          specialArgs = {
+            inherit tartarus;
+          };
+        };
+      });
 
       devShells = forEachSystem (
         system:
@@ -40,11 +43,8 @@
         }
       );
 
-      packages = forEachSystem (
-        system:
-        {
-          default = self.agents.${system}.default.bundle;
-        }
-      );
+      packages = forEachSystem (system: {
+        default = self.agents.${system}.default.config.build.bundle;
+      });
     };
 }

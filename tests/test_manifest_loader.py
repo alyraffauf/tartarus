@@ -340,7 +340,11 @@ def test_non_string_capability_description_is_rejected():
         (("echo", "params"), "bad", "params.*object"),
         (("echo", "params", "message"), "bad", "params.message"),
         (("echo", "params", "message", "required"), "yes", "required.*valid boolean"),
-        (("echo", "params", "message", "description"), ["bad"], "description.*valid string"),
+        (
+            ("echo", "params", "message", "description"),
+            ["bad"],
+            "description.*valid string",
+        ),
         (("echo", "params", "message", "enum"), "red", "enum.*valid list"),
     ],
 )

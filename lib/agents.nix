@@ -1,6 +1,11 @@
-{ lib }:
+{
+  lib,
+  nixpkgs,
+}:
 
 let
+  inherit (lib) types;
+
   paramSchema =
     param:
     {
@@ -20,14 +25,6 @@ let
     parameters = paramsToSchema capability.params;
   };
 
-  packageBin =
-    package:
-    let
-      binRoot = packageBinRoot package;
-      hasBinDir = builtins.pathExists (binRoot + "/bin");
-    in
-    if hasBinDir then "${binRoot}/bin" else "${package}/bin";
-
   packageBinRoot =
     package:
     let
@@ -35,35 +32,35 @@ let
     in
     if builtins.pathExists (binOutput + "/bin") then binOutput else package;
 
-  # The closure of a grant's packages, emitted as a store path to the
-  # newline-list `closureInfo` produces. The harness binds exactly these paths
-  # into the jail, so a capability reaches its declared closure and nothing else.
-  # A store path string, not IFD: the file is realized by the `grantClosures`
-  # build and read by the harness afterward, never during eval.
-  closureFile = pkgs: roots: "${pkgs.closureInfo { rootPaths = roots; }}/store-paths";
+  # The bin path is always "<root>/bin"; `packageBinRoot` already resolved which
+  # store path holds it, so no second probe is needed.
+  packageBin = package: "${packageBinRoot package}/bin";
 
+  # `info` is a capability's precomputed grant info: the resolved package roots
+  # and the single `closureInfo` derivation built from them (see `tartarusAgent`),
+  # so the closure is realized once and shared between the manifest and the bundle.
   grantToJson =
-    pkgs: grant:
-    let
-      packageRoots = map packageBinRoot (grant.packages or [ ]);
-    in
+    info: grant:
     builtins.removeAttrs grant [ "packages" ]
     // {
-      packageBins = map packageBin (grant.packages or [ ]);
-      closure = closureFile pkgs packageRoots;
+      packageBins = map (root: "${root}/bin") info.roots;
+      closure = "${info.closure}/store-paths";
     };
 
   capabilityToJson =
-    pkgs: capability:
-    capability
+    info: capability:
+    (builtins.removeAttrs capability [ "runner" ])
     // {
-      grants = grantToJson pkgs capability.grants;
-    };
+      grants = grantToJson info capability.grants;
+    }
+    // lib.optionalAttrs (capability.runner != null) { inherit (capability) runner; };
 
   compileManifest =
-    pkgs: capabilities:
+    grantInfo: capabilities:
     let
-      compiledCapabilities = lib.mapAttrs (_: capability: capabilityToJson pkgs capability) capabilities;
+      compiledCapabilities = lib.mapAttrs (
+        name: capability: capabilityToJson grantInfo.${name} capability
+      ) capabilities;
       exposed = lib.filterAttrs (_: capability: capability.policy != "deny") compiledCapabilities;
     in
     {
@@ -71,152 +68,389 @@ let
       capabilities = compiledCapabilities;
     };
 
-  # A capability self-identifies via `name`. Accept either a plain attrset (when
-  # `pkgs` is already in scope) or a function of `moduleArgs` (to share it across
-  # flakes). `name` is stripped from the body because the attr key carries it.
-  resolveCapabilities =
-    moduleArgs: capabilityModules:
-    lib.foldl' (
-      resolved: capabilityModule:
-      let
-        capability =
-          if lib.isFunction capabilityModule then capabilityModule moduleArgs else capabilityModule;
-        name = capability.name or (throw "Tartarus: a capability is missing its `name`");
-      in
-      if resolved ? ${name} then
-        throw "Tartarus: duplicate capability name '${name}'"
-      else
-        resolved // { ${name} = builtins.removeAttrs capability [ "name" ]; }
-    ) { } capabilityModules;
+  modelType = types.submodule {
+    options = {
+      provider = lib.mkOption {
+        type = types.nullOr types.str;
+        default = null;
+      };
+      baseUrl = lib.mkOption {
+        type = types.nullOr types.str;
+        default = null;
+      };
+      name = lib.mkOption {
+        type = types.nullOr types.str;
+        default = null;
+      };
+      maxTokens = lib.mkOption {
+        type = types.nullOr types.ints.positive;
+        default = null;
+      };
+      sampling = lib.mkOption {
+        type = types.nullOr (types.attrsOf types.number);
+        default = null;
+      };
+    };
+  };
 
-  # The default shell: the always-present baseline PATH inside every jailed call,
-  # before any capability grant is layered on. Kept deliberately minimal so the
-  # shell reflects the capability-OS model — each tool brings its own packages via
-  # `grants.packages`. Agents that want a richer baseline declare their own `shell`.
-  defaultShellPackages = pkgs: [
-    pkgs.bash
-    pkgs.coreutils
-  ];
+  paramType = types.submodule {
+    options = {
+      type = lib.mkOption {
+        type = types.enum [
+          "string"
+          "integer"
+          "boolean"
+          "array"
+        ];
+      };
+      description = lib.mkOption {
+        type = types.str;
+        default = "";
+      };
+      required = lib.mkOption {
+        type = types.bool;
+        default = false;
+      };
+      enum = lib.mkOption {
+        type = types.nullOr (types.listOf types.anything);
+        default = null;
+      };
+    };
+  };
 
-  # An agent's `shell` may be omitted (use the minimal default), given as a plain
-  # list of packages (wrapped into a shell here), or given as a devShell
-  # derivation directly (reused from the flake or declared inline). Its PATH is
-  # baked into the bundle manifest; the shell output remains useful for humans.
-  resolveShell =
-    pkgs: shell:
-    if shell == null then
-      pkgs.mkShellNoCC { packages = defaultShellPackages pkgs; }
-    else if lib.isList shell then
-      pkgs.mkShellNoCC { packages = shell; }
-    else
-      shell;
+  grantOpensReach =
+    grant:
+    grant.packages != [ ]
+    || grant.network.allowedHosts != [ ]
+    || grant.writable != [ ]
+    || grant.unrestricted;
 
-  # The packages whose closure must be bound for the baseline shell PATH to work
-  # inside the jail. For the list and default forms we know the packages exactly;
-  # for a devShell-derivation `shell` we fall back to its inputs (so a custom
-  # devShell must declare its runtime PATH deps as packages — by design).
-  shellPackagesOf =
-    pkgs: shell:
-    if shell == null then
-      defaultShellPackages pkgs
-    else if lib.isList shell then
-      shell
-    else
-      (shell.buildInputs or [ ]) ++ (shell.nativeBuildInputs or [ ]);
+  capabilityType = {
+    options = {
+      description = lib.mkOption {
+        type = types.str;
+        default = "";
+      };
+      policy = lib.mkOption {
+        type = types.enum [
+          "auto"
+          "ask-once"
+          "ask-always"
+          "deny"
+        ];
+      };
+      params = lib.mkOption {
+        type = types.attrsOf paramType;
+        default = { };
+      };
+      grants = {
+        packages = lib.mkOption {
+          type = types.listOf types.package;
+          default = [ ];
+        };
+        network.allowedHosts = lib.mkOption {
+          type = types.listOf types.str;
+          default = [ ];
+        };
+        writable = lib.mkOption {
+          type = types.listOf types.str;
+          default = [ ];
+        };
+        unrestricted = lib.mkOption {
+          type = types.bool;
+          default = false;
+        };
+      };
+      runner = lib.mkOption {
+        type = types.nullOr types.str;
+        default = null;
+      };
+      kind = lib.mkOption {
+        type = types.enum [
+          "command"
+          "background"
+          "control"
+        ];
+        default = "command";
+      };
+      timeout = lib.mkOption {
+        type = types.nullOr types.ints.positive;
+        default = null;
+      };
+      control = lib.mkOption {
+        type = types.nullOr (
+          types.enum [
+            "status"
+            "output"
+            "stop"
+          ]
+        );
+        default = null;
+      };
+    };
+  };
 
-  mkAgent =
-    moduleArgs:
-    {
-      capabilities,
-      systemPrompt ? null,
-      shell ? null,
-      grantEnvName ? "tartarus-nix-grants",
-      # The agent's model: one coherent unit holding the backend a model id is
-      # only meaningful within (`provider` type, `baseUrl`, `name`) plus its
-      # inference knobs (`maxTokens`, `sampling`). Optional — an agent that omits
-      # it inherits the harness defaults (PLAN.md §9). API keys and request
-      # headers are never declared here: they stay in the environment.
-      model ? null,
-    }:
+  # The cross-field rules Nix types cannot express on their own. Returns the full
+  # rule list (assertion + message) per capability; the `assertions` option
+  # aggregates them and build outputs check them lazily via `assertWarn`.
+  # Standard NixOS shape, so downstream modules can contribute their own.
+  capabilityAssertions =
+    name: capability:
+    [
+      {
+        assertion = !(capability.grants.unrestricted && capability.policy == "auto");
+        message = "Tartarus capability '${name}' cannot combine unrestricted = true with policy = \"auto\".";
+      }
+      {
+        assertion = capability.kind != "background" || capability.timeout == null;
+        message = "Tartarus background capability '${name}' cannot declare timeout.";
+      }
+      {
+        assertion = capability.kind != "background" || !capability.grants.unrestricted;
+        message = "Tartarus background capability '${name}' cannot be unrestricted.";
+      }
+      {
+        assertion = capability.kind != "control" || capability.control != null;
+        message = "Tartarus control capability '${name}' must declare control.";
+      }
+      {
+        assertion = capability.kind == "control" || capability.control == null;
+        message = "Tartarus capability '${name}' can declare control only when kind = \"control\".";
+      }
+      {
+        assertion = capability.kind != "control" || capability.runner == null;
+        message = "Tartarus control capability '${name}' must not declare runner.";
+      }
+      {
+        assertion = capability.kind != "control" || !grantOpensReach capability.grants;
+        message = "Tartarus control capability '${name}' must not declare grants.";
+      }
+      {
+        assertion = capability.kind == "control" || capability.runner != null;
+        message = "Tartarus capability '${name}' must declare runner.";
+      }
+    ];
+
+  # A trimmed subset of NixOS's `nixpkgs` module: an agent (or any of its
+  # modules) configures its package set declaratively, and every module receives
+  # the result as `pkgs` via `_module.args`.
+  nixpkgsModule =
+    { config, ... }:
     let
-      resolved = resolveCapabilities moduleArgs capabilities;
-      pkgs = moduleArgs.pkgs;
-      # The baseline PATH packages: the declared shell plus bashInteractive (the
-      # shell `nix develop` used to run). The baked `shellPath` and the bound
-      # `shellClosure` share these roots, so PATH never advertises a binary the
-      # jail does not bind. cacert carries no bin; it rides the closure only, for
-      # the CA bundle so TLS works inside the jail for network grants.
-      shellBinPackages = shellPackagesOf pkgs shell ++ [ pkgs.bashInteractive ];
-      shellRoots = map packageBinRoot shellBinPackages ++ [ pkgs.cacert ];
-      shellClosureDrv = pkgs.closureInfo { rootPaths = shellRoots; };
-      grantClosureDrvs = map (
-        capability:
-        pkgs.closureInfo {
-          rootPaths = map packageBinRoot (capability.grants.packages or [ ]);
-        }
-      ) (lib.attrValues resolved);
+      cfg = config.nixpkgs;
+    in
+    {
+      options.nixpkgs = {
+        hostPlatform = lib.mkOption {
+          type = types.str;
+        };
+        config = lib.mkOption {
+          type = types.attrs;
+          default = { };
+        };
+        overlays = lib.mkOption {
+          type = types.listOf (
+            lib.mkOptionType {
+              name = "nixpkgs-overlay";
+              description = "nixpkgs overlay";
+              check = lib.isFunction;
+              merge = lib.mergeOneOption;
+            }
+          );
+          default = [ ];
+        };
+        pkgs = lib.mkOption {
+          type = types.raw;
+          # Reuse the flake's memoized legacyPackages when nothing is customized
+          # (cheap, shared across the flake); otherwise import per config/overlays.
+          default =
+            if cfg.config == { } && cfg.overlays == [ ] then
+              nixpkgs.legacyPackages.${cfg.hostPlatform}
+            else
+              import nixpkgs {
+                localSystem = cfg.hostPlatform;
+                inherit (cfg) config overlays;
+              };
+        };
+      };
 
-      # The compiled, fully-resolved manifest: tool/capability contract plus the
-      # baked baseline PATH, the shell closure pointer, the CA bundle, and the
-      # optional persona/model. Serialized verbatim into the bundle below.
+      config._module.args.pkgs = cfg.pkgs;
+    };
+
+  agentModule =
+    { pkgs, config, ... }:
+    {
+      options = {
+        # The agent's identity: names the bundle derivation, mirroring how
+        # `config.system.name` (← `networking.hostName`) names a NixOS toplevel.
+        # Defaults to a constant; set it per agent for descriptive, non-colliding
+        # bundle labels across multi-agent flakes.
+        name = lib.mkOption {
+          type = types.str;
+          default = "agent";
+        };
+        systemPrompt = lib.mkOption {
+          type = types.nullOr types.str;
+          default = null;
+        };
+        model = lib.mkOption {
+          type = types.nullOr modelType;
+          default = null;
+        };
+        shell.packages = lib.mkOption {
+          type = types.listOf types.package;
+          default = with pkgs; [
+            bash
+            coreutils
+          ];
+        };
+        capabilities = lib.mkOption {
+          type = types.attrsOf (types.submodule capabilityType);
+          default = { };
+        };
+        assertions = lib.mkOption {
+          type = types.listOf (
+            types.submodule {
+              options = {
+                assertion = lib.mkOption { type = types.bool; };
+                message = lib.mkOption { type = types.str; };
+              };
+            }
+          );
+          default = [ ];
+          internal = true;
+        };
+        warnings = lib.mkOption {
+          type = types.listOf types.str;
+          default = [ ];
+          internal = true;
+        };
+      };
+
+      config.assertions = lib.concatLists (
+        lib.mapAttrsToList capabilityAssertions config.capabilities
+      );
+    };
+
+  # The agent's build outputs, living in the module graph at `config.build.*` —
+  # the agent analog of NixOS's `config.system.build.toplevel`. Assertions and
+  # warnings are evaluated NixOS-style when a build output is forced: reading
+  # `config` is free, but realizing the manifest or bundle checks the contract.
+  buildModule =
+    { config, pkgs, ... }:
+    let
+      capabilities = config.capabilities;
+      # One `closureInfo` per capability, shared between the manifest `closure`
+      # pointer and the bundle's symlinks. `roots` is reused for `packageBins`.
+      grantInfo = lib.mapAttrs (
+        _: capability:
+        let
+          roots = map packageBinRoot capability.grants.packages;
+        in
+        {
+          inherit roots;
+          closure = pkgs.closureInfo { rootPaths = roots; };
+        }
+      ) capabilities;
+      shellBinPackages = config.shell.packages ++ [ pkgs.bashInteractive ];
+      shellRootList = map packageBinRoot shellBinPackages;
+      shellRoots = shellRootList ++ [ pkgs.cacert ];
+      shellClosureDrv = pkgs.closureInfo { rootPaths = shellRoots; };
       compiledManifest =
-        compileManifest pkgs resolved
+        compileManifest grantInfo capabilities
         // {
           caBundle = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
           shellClosure = "${shellClosureDrv}/store-paths";
-          shellPath = lib.concatStringsSep ":" (lib.unique (map packageBin shellBinPackages));
+          shellPath = lib.concatStringsSep ":" (lib.unique (map (root: "${root}/bin") shellRootList));
         }
-        // lib.optionalAttrs (systemPrompt != null) { inherit systemPrompt; }
-        // lib.optionalAttrs (model != null) { inherit model; };
+        // lib.optionalAttrs (config.systemPrompt != null) { inherit (config) systemPrompt; }
+        // lib.optionalAttrs (config.model != null) { inherit (config) model; };
+      assertWarn =
+        result:
+        let
+          failed = lib.filter (assertion: !assertion.assertion) config.assertions;
+        in
+        if failed != [ ] then
+          throw (
+            "Tartarus agent assertion failures:\n"
+            + lib.concatMapStringsSep "\n" (assertion: "  - ${assertion.message}") failed
+          )
+        else
+          lib.showWarnings config.warnings result;
     in
     {
-      capabilities = resolved;
+      options.build = {
+        manifest = lib.mkOption {
+          type = types.raw;
+          readOnly = true;
+        };
+        bundle = lib.mkOption {
+          type = types.package;
+          readOnly = true;
+        };
+        shell = lib.mkOption {
+          type = types.package;
+          readOnly = true;
+        };
+      };
 
-      # The agent owns its shell: a devShell kept for `nix develop` ergonomics.
-      # The harness no longer resolves it — the baseline PATH is baked into the
-      # manifest's `shellPath` — but it stays a convenient entry point.
-      shell = resolveShell pkgs shell;
+      config.build = {
+        manifest = assertWarn compiledManifest;
 
-      manifest = compiledManifest;
-
-      # The shippable agent: one derivation whose runtime closure is the whole
-      # agent. Writing the manifest JSON into $out makes the output reference
-      # every store path it names (package bins, each grant's `closure`
-      # store-paths file, the shell closure, the CA bundle, the baked PATH
-      # entries), so `nix copy <bundle>` pulls the complete closure. The symlinks
-      # force realization and aid debugging. The harness reads
-      # <bundle>/manifest.json with no nix calls (tartarus/bundle.py).
-      bundle =
-        pkgs.runCommand "${grantEnvName}-bundle"
-          {
-            manifestJson = builtins.toJSON compiledManifest;
-            passAsFile = [ "manifestJson" ];
-            closures = [ shellClosureDrv ] ++ grantClosureDrvs;
+        shell = assertWarn (
+          pkgs.mkShellNoCC {
+            packages = config.shell.packages;
           }
-          ''
-            mkdir -p "$out/closures"
-            cp "$manifestJsonPath" "$out/manifest.json"
-            ln -s ${shellClosureDrv} "$out/closures/shell"
-            n=0
-            for closure in $closures; do
-              ln -s "$closure" "$out/closures/grant-$n"
-              n=$((n + 1))
-            done
-          '';
+        );
+
+        bundle = assertWarn (
+          pkgs.runCommand "tartarus-${config.name}-bundle"
+            {
+              manifestJson = builtins.toJSON compiledManifest;
+              passAsFile = [ "manifestJson" ];
+              closures = [ shellClosureDrv ] ++ map (info: info.closure) (lib.attrValues grantInfo);
+            }
+            ''
+              mkdir -p "$out/closures"
+              cp "$manifestJsonPath" "$out/manifest.json"
+              ln -s ${shellClosureDrv} "$out/closures/shell"
+              n=0
+              for closure in $closures; do
+                ln -s "$closure" "$out/closures/grant-$n"
+                n=$((n + 1))
+              done
+            ''
+        );
+      };
     };
+
+  # Evaluate an agent's module graph. Returns the `lib.evalModules` result —
+  # `config`, `options`, `extendModules`, `class`, `type`, `_module` — plus
+  # `pkgs`, mirroring `nixpkgs.lib.nixosSystem`. Build outputs live at
+  # `result.config.build.{manifest,bundle,shell}`.
+  tartarusAgent =
+    {
+      system,
+      modules,
+      specialArgs ? { },
+    }:
+    let
+      evaluated = lib.evalModules {
+        class = "tartarus";
+        inherit specialArgs;
+        modules = [
+          agentModule
+          nixpkgsModule
+          buildModule
+          { nixpkgs.hostPlatform = lib.mkDefault system; }
+        ]
+        ++ modules;
+      };
+    in
+    evaluated // { pkgs = evaluated.config.nixpkgs.pkgs; };
+
+  evalAgentConfig = args: (tartarusAgent args).config;
 in
 {
-  inherit mkAgent resolveCapabilities;
-
-  mkAgents =
-    moduleArgs: agents:
-    lib.mapAttrs (
-      agentName: agentConfig:
-      mkAgent moduleArgs (
-        agentConfig
-        // {
-          grantEnvName = agentConfig.grantEnvName or "tartarus-nix-${agentName}-grants";
-        }
-      )
-    ) agents;
+  inherit tartarusAgent evalAgentConfig;
 }

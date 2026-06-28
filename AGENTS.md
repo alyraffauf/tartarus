@@ -10,7 +10,7 @@ bubblewrap.
 Two languages, one contract between them:
 
 - **Nix side** (`lib/agents.nix`, `agent.nix`, `flake.nix`): compiles an agent's
-  capabilities into `.#agents.<system>.<name>.bundle` — a store path containing
+  capabilities into `.#agents.<system>.<name>.config.build.bundle` — a store path containing
   `manifest.json` plus symlinks to each grant's closure. The manifest
   references every store path it names, so `nix copy <bundle>` pulls the full
   closure.
@@ -30,7 +30,7 @@ uv run pytest -k "parse_agent"         # one test / pattern
 uv run ruff check .                    # lint (passes clean on defaults)
 uv run ty check                        # typecheck (Astral ty, NOT mypy; passes clean)
 uv run python main.py "prompt"         # run the agent (see below)
-nix build .#agents.x86_64-linux.default.bundle --no-link --print-out-paths
+nix build .#agents.x86_64-linux.default.config.build.bundle --no-link --print-out-paths
 ```
 
 `uv` supplies `ruff` and `ty` from the `dev` dependency group; the `nix
@@ -85,11 +85,23 @@ From `tartarus/jail.py` and `PLAN.md §8`:
 
 ## Editing the agent and capabilities (`agent.nix`, `lib/agents.nix`)
 
-- A capability is either a plain attrset (when `pkgs` is in scope) or a
-  module **function** `{ pkgs, ... }: { ... }` (self-contained, copyable across
-  flakes). Both forms are accepted; `resolveCapabilities` handles either.
-- `name` is **stripped from the body** — the attrset key carries it. Duplicate
-  capability names throw at compile time.
+- Agents are NixOS-style module graphs passed to `tartarus.lib.tartarusAgent`,
+  which takes `{ system, modules, specialArgs }` like `nixpkgs.lib.nixosSystem`.
+  Reusable entries under `tartarus.modules` are ordinary agent modules: they can
+  set capabilities, prompts, shell packages, imports, or any other agent option.
+- The package set comes from a NixOS-style `nixpkgs` module: `nixpkgs.hostPlatform`
+  defaults to `system`; set `nixpkgs.config`/`nixpkgs.overlays`/`nixpkgs.pkgs` in a
+  module to override it. Modules receive the result as `pkgs` — there is no `pkgs`
+  function argument.
+- The `name` option labels the bundle derivation (`tartarus-<name>-bundle`),
+  mirroring `networking.hostName`. It defaults to `agent`; set it per agent
+  (conventionally matching the attr key) — the attr key is not auto-inherited.
+- `tartarusAgent` returns the `evalModules` result (`config`/`options`/`pkgs`/
+  `extendModules`), like `nixosSystem`. Build outputs are at
+  `config.build.{manifest,bundle,shell}`; assertions are checked when a build
+  output is forced (reading `config` is free), mirroring `system.build.toplevel`.
+- Capabilities are keyed attrsets under `capabilities.<name>`. Do not put
+  `name` in the capability body; the attrset key is the identity.
 - The agent's `shell` is the baseline PATH baked into the manifest; keep it
   minimal. Tool-specific programs go in that capability's `grants.packages`.
 - `kind = "background"` launches detached (handle returned immediately);

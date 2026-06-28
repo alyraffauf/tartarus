@@ -36,4 +36,4 @@ jobs:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: DeterminateSystems/magic-nix-cache-action@v14
-      - run: nix build .#agents.x86_64-linux.default.bundle --no-link --print-out-paths
+      - run: nix build .#agents.x86_64-linux.default.config.build.bundle --no-link --print-out-paths

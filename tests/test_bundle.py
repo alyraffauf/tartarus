@@ -174,7 +174,7 @@ def test_resolve_bundle_builds_from_flake(monkeypatch):
         [
             "nix",
             "build",
-            f"path:.#agents.{system}.research.bundle",
+            f"path:.#agents.{system}.research.config.build.bundle",
             "--no-link",
             "--print-out-paths",
         ]

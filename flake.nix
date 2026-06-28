@@ -20,6 +20,7 @@
 
   outputs =
     {
+      self,
       nixpkgs,
       pyproject-nix,
       uv2nix,
@@ -33,49 +34,131 @@
       ];
       inherit (nixpkgs) lib;
       eachSystem = lib.genAttrs supportedSystems;
-      pkgsFor = system: import nixpkgs { inherit system; };
+      pkgsFor = system: nixpkgs.legacyPackages.${system};
 
-      # The reusable compiler from real Nix capabilities to agent bundles.
-      agentsLib = import ./lib/agents.nix { inherit lib; };
-      agentModules = import ./agent-modules { inherit lib; };
+      agentsLib = import ./lib/agents.nix { inherit lib nixpkgs; };
+      modules = import ./agent-modules { inherit lib; };
     in
     {
       lib = agentsLib;
-      inherit agentModules;
+      inherit modules;
 
-      # `.#agents.<system>.<name>.bundle` is the shareable runtime boundary the
-      # Python harness consumes. We ship one agent named `default`; the lib
-      # supports many, so downstream flakes call `agentsLib.mkAgents` with their
-      # own named set.
-      agents = eachSystem (
-        system:
-        let
-          pkgs = pkgsFor system;
-        in
-        agentsLib.mkAgents { inherit pkgs; } (import ./agent.nix { inherit pkgs agentModules; })
-      );
+      agents = eachSystem (system: {
+        default = agentsLib.tartarusAgent {
+          inherit system;
+          modules = [ ./agent.nix ];
+          specialArgs = {
+            tartarus = self;
+          };
+        };
+      });
 
       checks = eachSystem (
         system:
         let
           pkgs = pkgsFor system;
-          moduleNames = [
-            "bash"
-            "read"
-            "write"
-            "edit"
-            "glob"
-            "list"
-            "grep"
-            "web_fetch"
+          evalModuleAgent =
+            moduleList:
+            agentsLib.tartarusAgent {
+              inherit system;
+              modules = moduleList;
+              specialArgs = {
+                tartarus = self;
+              };
+            };
+          evalFails = agent: !(builtins.tryEval (builtins.deepSeq agent.config.build.manifest true)).success;
+          # A single-capability agent named `bad`, for the failure-case checks.
+          badCap = capability: evalModuleAgent [ { capabilities.bad = capability; } ];
+          defaultManifest = self.agents.${system}.default.config.build.manifest;
+          minimalAgent = evalModuleAgent [
+            {
+              capabilities.read_package_json = {
+                description = "Read package.json from the work tree.";
+                policy = "auto";
+                runner = "cat package.json";
+              };
+            }
           ];
-          resolvedCatalog = agentsLib.resolveCapabilities { inherit pkgs; } (
-            map (moduleName: agentModules.${moduleName}) moduleNames
-          );
-          defaultManifest =
-            (agentsLib.mkAgents { inherit pkgs; } (import ./agent.nix { inherit pkgs agentModules; }))
-            .default.manifest;
-          catalogCapabilityNames = lib.attrNames resolvedCatalog;
+          profileAgent = evalModuleAgent [
+            modules.coding
+          ];
+          inlineAgent = evalModuleAgent [
+            {
+              capabilities.read_package_json = {
+                description = "Read package.json with jq.";
+                policy = "auto";
+                params = { };
+                grants.packages = [ pkgs.jq ];
+                runner = "jq . package.json";
+              };
+            }
+          ];
+          multipleAgents = {
+            default = evalModuleAgent [ modules.read ];
+            research = evalModuleAgent [ modules.webFetch ];
+          };
+          # A bad capability is rejected by one of two fail-closed layers, tested
+          # separately so a regression in either surfaces on its own.
+
+          # Layer 1: the module schema — option types and the required `policy`
+          # option reject a malformed declaration before any rule runs.
+          schemaFailureAgents = {
+            missing-policy = badCap { runner = "true"; };
+            invalid-policy = badCap {
+              policy = "sometimes";
+              runner = "true";
+            };
+            invalid-grants = badCap {
+              policy = "auto";
+              runner = "true";
+              grants = "bad";
+            };
+          };
+
+          # Layer 2: capabilityAssertions — each case is otherwise type-valid, so
+          # it can only fail via the one capability rule it names. Every rule has a
+          # case here.
+          validationFailureAgents = {
+            unrestricted-auto = badCap {
+              policy = "auto";
+              runner = "true";
+              grants.unrestricted = true;
+            };
+            background-timeout = badCap {
+              policy = "ask-always";
+              kind = "background";
+              timeout = 1;
+              runner = "true";
+            };
+            background-unrestricted = badCap {
+              policy = "ask-always";
+              kind = "background";
+              runner = "true";
+              grants.unrestricted = true;
+            };
+            control-missing-control = badCap {
+              policy = "auto";
+              kind = "control";
+            };
+            control-on-command = badCap {
+              policy = "auto";
+              control = "status";
+              runner = "true";
+            };
+            control-runner = badCap {
+              policy = "auto";
+              kind = "control";
+              control = "status";
+              runner = "true";
+            };
+            control-grants = badCap {
+              policy = "auto";
+              kind = "control";
+              control = "status";
+              grants.packages = [ pkgs.bash ];
+            };
+            command-missing-runner = badCap { policy = "auto"; };
+          };
           expectedCapabilityNames = [
             "bash"
             "edit"
@@ -116,9 +199,19 @@
           ];
           checksPassed =
             lib.assertMsg (
-              (builtins.sort builtins.lessThan catalogCapabilityNames)
+              (builtins.sort builtins.lessThan (lib.attrNames profileAgent.config.capabilities))
               == (builtins.sort builtins.lessThan expectedCapabilityNames)
-            ) "agentModules must resolve to the expected capability names"
+            ) "coding profile must expose the expected capability names"
+            && lib.assertMsg (
+              minimalAgent.config.build.manifest.capabilities ? read_package_json
+            ) "minimal module-authored agent must compile"
+            && lib.assertMsg (
+              inlineAgent.config.build.manifest.capabilities.read_package_json.grants.packageBins != [ ]
+            ) "inline module capability must compile package grants"
+            && lib.assertMsg (
+              multipleAgents.default.config.build.manifest.capabilities ? read
+              && multipleAgents.research.config.build.manifest.capabilities ? web_fetch
+            ) "multiple agents under agents.<system> must compile"
             && lib.assertMsg (
               (builtins.sort builtins.lessThan defaultToolNames)
               == (builtins.sort builtins.lessThan expectedDefaultTools)
@@ -133,7 +226,9 @@
             && lib.assertMsg (
               defaultManifest.capabilities.shell_escape.grants.unrestricted
               && !(builtins.elem "shell_escape" defaultToolNames)
-            ) "shell_escape must stay denied and absent from tools";
+            ) "shell_escape must stay denied and absent from tools"
+            && lib.assertMsg (lib.all evalFails (lib.attrValues schemaFailureAgents)) "malformed capability declarations must fail the module schema"
+            && lib.assertMsg (lib.all evalFails (lib.attrValues validationFailureAgents)) "type-valid capabilities that violate a capability rule must fail capabilityAssertions";
         in
         {
           agent-modules = pkgs.runCommand "tartarus-agent-modules-check" { } ''
@@ -153,7 +248,7 @@
           };
         in
         {
-          default = tartarus;
+          default = self.agents.${system}.default.config.build.bundle;
           inherit tartarus;
         }
       );
