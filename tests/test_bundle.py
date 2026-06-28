@@ -118,7 +118,7 @@ def test_load_bundle_rejects_missing_ca_bundle(tmp_path):
     del manifest["caBundle"]
     (tmp_path / "manifest.json").write_text(json.dumps(manifest))
 
-    with pytest.raises(BundleError, match="caBundle.*required"):
+    with pytest.raises(BundleError, match="caBundle"):
         load_bundle(str(tmp_path))
 
 

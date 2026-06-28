@@ -3,7 +3,14 @@ from tartarus.policy import PolicyEngine
 
 
 def _capability(policy, name="cap"):
-    return Capability(name, "desc", policy, {}, Grant(), "true")
+    return Capability(
+        name=name,
+        description="desc",
+        policy=policy,
+        params={},
+        grants=Grant(),
+        runner="true",
+    )
 
 
 def _always_yes():

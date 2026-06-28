@@ -241,7 +241,16 @@ def test_missing_required_argument_never_reaches_the_jail():
 
 def test_deny_capability_never_reaches_the_jail():
     jail = FakeJail()
-    capabilities = {"locked": Capability("locked", "no", "deny", {}, Grant(), "true")}
+    capabilities = {
+        "locked": Capability(
+            name="locked",
+            description="no",
+            policy="deny",
+            params={},
+            grants=Grant(),
+            runner="true",
+        )
+    }
     broker = Broker(build_manifest(capabilities), jail, PolicyEngine())
 
     result = broker.handle(_call("locked", {}))
@@ -256,7 +265,7 @@ def _ask_always_manifest():
         name="run_command",
         description="run",
         policy="ask-always",
-        params={"command": Param("string", "", required=True)},
+        params={"command": Param(type="string", description="", required=True)},
         grants=Grant(),
         runner="bash -c {command}",
     )
@@ -268,7 +277,7 @@ def _unrestricted_manifest():
         name="shell_escape",
         description="escape",
         policy="ask-always",
-        params={"command": Param("string", "", required=True)},
+        params={"command": Param(type="string", description="", required=True)},
         grants=Grant(unrestricted=True),
         runner="bash -c {command}",
     )
@@ -346,7 +355,7 @@ def _background_manifest():
         name="run_bg",
         description="run detached",
         policy="ask-always",
-        params={"command": Param("string", "", required=True)},
+        params={"command": Param(type="string", description="", required=True)},
         grants=Grant(writable=["."]),
         runner="bash -c {command}",
         kind="background",
@@ -359,7 +368,7 @@ def _control_manifest(name, op, policy="auto"):
         name=name,
         description="control",
         policy=policy,
-        params={"task": Param("string", "", required=True)},
+        params={"task": Param(type="string", description="", required=True)},
         grants=Grant(),
         runner="",
         kind="control",
@@ -465,8 +474,13 @@ def test_control_output_rejects_non_integer_offset_via_broker_dispatch():
 
 def test_validate_args_enforces_types_and_enums():
     params = {
-        "direction": Param("string", "", required=True, enum=["up", "down"]),
-        "steps": Param("integer", ""),
+        "direction": Param(
+            type="string",
+            description="",
+            required=True,
+            enum=["up", "down"],
+        ),
+        "steps": Param(type="integer", description=""),
     }
 
     assert validate_args({"direction": "up"}, params) is None

@@ -1,5 +1,3 @@
-from dataclasses import replace
-
 import pytest
 
 from tartarus.manifest_loader import (
@@ -118,7 +116,7 @@ def test_missing_ca_bundle_is_rejected():
     raw = _valid_raw()
     del raw["caBundle"]
 
-    with pytest.raises(ManifestError, match="caBundle.*required"):
+    with pytest.raises(ManifestError, match="ca_bundle_file"):
         build_manifest_from_raw(raw)
 
 
@@ -167,7 +165,7 @@ def test_non_string_system_prompt_is_rejected():
     raw = _valid_raw()
     raw["systemPrompt"] = ["not", "a", "string"]
 
-    with pytest.raises(ManifestError, match="systemPrompt"):
+    with pytest.raises(ManifestError, match="system_prompt"):
         build_manifest_from_raw(raw)
 
 
@@ -289,7 +287,7 @@ def test_invalid_policy_literal_is_rejected():
     raw = _valid_raw()
     raw["capabilities"]["echo"]["policy"] = "sometimes"
 
-    with pytest.raises(ManifestError, match="invalid policy"):
+    with pytest.raises(ManifestError, match="policy"):
         build_manifest_from_raw(raw)
 
 
@@ -309,11 +307,19 @@ def test_non_object_network_is_rejected():
         build_manifest_from_raw(raw)
 
 
+def test_non_object_capabilities_is_rejected():
+    raw = _valid_raw()
+    raw["capabilities"] = ["not", "an", "object"]
+
+    with pytest.raises(ManifestError, match="capabilities.*object"):
+        build_manifest_from_raw(raw)
+
+
 def test_non_string_writable_entry_is_rejected():
     raw = _valid_raw()
     raw["capabilities"]["echo"]["grants"]["writable"] = [1]
 
-    with pytest.raises(ManifestError, match="writable entries must be strings"):
+    with pytest.raises(ManifestError, match="writable.*valid string"):
         build_manifest_from_raw(raw)
 
 
@@ -321,7 +327,7 @@ def test_non_string_package_bin_entry_is_rejected():
     raw = _valid_raw()
     raw["capabilities"]["echo"]["grants"]["packageBins"] = [1]
 
-    with pytest.raises(ManifestError, match="packageBins entries must be strings"):
+    with pytest.raises(ManifestError, match="package_bins.*valid string"):
         build_manifest_from_raw(raw)
 
 
@@ -329,7 +335,7 @@ def test_non_string_capability_description_is_rejected():
     raw = _valid_raw()
     raw["capabilities"]["echo"]["description"] = ["bad"]
 
-    with pytest.raises(ManifestError, match="description.*string"):
+    with pytest.raises(ManifestError, match="description.*valid string"):
         build_manifest_from_raw(raw)
 
 
@@ -345,7 +351,7 @@ def test_non_object_param_body_is_rejected():
     raw = _valid_raw()
     raw["capabilities"]["echo"]["params"]["message"] = "bad"
 
-    with pytest.raises(ManifestError, match="param 'echo.message' must be an object"):
+    with pytest.raises(ManifestError, match="params.message"):
         build_manifest_from_raw(raw)
 
 
@@ -353,7 +359,7 @@ def test_non_boolean_param_required_is_rejected():
     raw = _valid_raw()
     raw["capabilities"]["echo"]["params"]["message"]["required"] = "yes"
 
-    with pytest.raises(ManifestError, match="required.*boolean"):
+    with pytest.raises(ManifestError, match="required.*valid boolean"):
         build_manifest_from_raw(raw)
 
 
@@ -361,7 +367,7 @@ def test_non_string_param_description_is_rejected():
     raw = _valid_raw()
     raw["capabilities"]["echo"]["params"]["message"]["description"] = ["bad"]
 
-    with pytest.raises(ManifestError, match="description.*string"):
+    with pytest.raises(ManifestError, match="description.*valid string"):
         build_manifest_from_raw(raw)
 
 
@@ -369,7 +375,7 @@ def test_non_list_param_enum_is_rejected():
     raw = _valid_raw()
     raw["capabilities"]["echo"]["params"]["message"]["enum"] = "red"
 
-    with pytest.raises(ManifestError, match="enum must be a list"):
+    with pytest.raises(ManifestError, match="enum.*valid list"):
         build_manifest_from_raw(raw)
 
 
@@ -488,19 +494,24 @@ def test_resolve_realized_closures_reads_store_paths(tmp_path):
     grant_file = tmp_path / "grant-store-paths"
     grant_file.write_text("/nix/store/coreutils\n/nix/store/jq\n")
 
-    # Inject temp file paths via replace so the read is exercised without forcing
+    # Inject temp file paths via model_copy so the read is exercised without forcing
     # the store-path shape rule (covered separately) onto a temp file.
     base = build_manifest_from_raw(_valid_raw())
     echo = base.capabilities["echo"]
-    manifest = replace(
-        base,
-        shell_closure_file=str(shell_file),
-        capabilities={
-            **base.capabilities,
-            "echo": replace(
-                echo, grants=replace(echo.grants, closure_file=str(grant_file))
-            ),
-        },
+    manifest = base.model_copy(
+        update={
+            "shell_closure_file": str(shell_file),
+            "capabilities": {
+                **base.capabilities,
+                "echo": echo.model_copy(
+                    update={
+                        "grants": echo.grants.model_copy(
+                            update={"closure_file": str(grant_file)}
+                        )
+                    }
+                ),
+            },
+        }
     )
 
     resolved = resolve_realized_closures(manifest)
@@ -526,9 +537,8 @@ def test_resolve_realized_closures_fails_closed_on_missing_file():
 def test_resolve_realized_closures_rejects_non_store_contents(tmp_path):
     bad_file = tmp_path / "store-paths"
     bad_file.write_text("/nix/store/ok\n/etc/passwd\n")
-    manifest = replace(
-        build_manifest_from_raw(_valid_raw()),
-        shell_closure_file=str(bad_file),
+    manifest = build_manifest_from_raw(_valid_raw()).model_copy(
+        update={"shell_closure_file": str(bad_file)}
     )
 
     with pytest.raises(ManifestError, match="non-store path"):
@@ -547,7 +557,7 @@ def test_non_object_tool_entry_is_rejected():
     raw = _valid_raw()
     raw["tools"][0] = "bad"
 
-    with pytest.raises(ManifestError, match="tool entries must be objects"):
+    with pytest.raises(ManifestError, match="tools.0.*valid dictionary"):
         build_manifest_from_raw(raw)
 
 
@@ -653,7 +663,7 @@ def test_control_kind_is_accepted_with_empty_runner_and_grants():
 
 
 def test_invalid_kind_is_rejected():
-    with pytest.raises(ManifestError, match="invalid kind"):
+    with pytest.raises(ManifestError, match="kind"):
         _build_capability("c", _cap_body(kind="weird"))
 
 
@@ -663,7 +673,7 @@ def test_control_op_on_non_control_kind_is_rejected():
 
 
 def test_invalid_control_op_is_rejected():
-    with pytest.raises(ManifestError, match="invalid control op"):
+    with pytest.raises(ManifestError, match="control"):
         _build_capability(
             "c", _cap_body(kind="control", control="frobnicate", runner="")
         )

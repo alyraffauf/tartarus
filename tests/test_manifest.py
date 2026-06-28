@@ -23,9 +23,12 @@ def test_tool_projection_builds_json_schema():
         policy="auto",
         params={
             "direction": Param(
-                "string", "Which way.", required=True, enum=["up", "down"]
+                type="string",
+                description="Which way.",
+                required=True,
+                enum=["up", "down"],
             ),
-            "steps": Param("integer", "How many."),
+            "steps": Param(type="integer", description="How many."),
         },
         grants=Grant(),
         runner="demo {direction}",
@@ -41,8 +44,22 @@ def test_tool_projection_builds_json_schema():
 
 def test_deny_capabilities_are_not_projected_into_tools():
     capabilities = {
-        "open": Capability("open", "ok", "auto", {}, Grant(), "true"),
-        "locked": Capability("locked", "no", "deny", {}, Grant(), "true"),
+        "open": Capability(
+            name="open",
+            description="ok",
+            policy="auto",
+            params={},
+            grants=Grant(),
+            runner="true",
+        ),
+        "locked": Capability(
+            name="locked",
+            description="no",
+            policy="deny",
+            params={},
+            grants=Grant(),
+            runner="true",
+        ),
     }
 
     manifest = build_manifest(capabilities)
