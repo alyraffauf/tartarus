@@ -20,12 +20,12 @@ from typing_extensions import Self
 class Grant(BaseModel):
     """The host reach a capability opens. Empty means "nothing beyond the shell"."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, strict=True)
 
     package_bins: list[str] = Field(default_factory=list)
     allowed_hosts: list[str] = Field(default_factory=list)
     writable: list[str] = Field(default_factory=list)
-    unrestricted: bool = Field(default=False, strict=True)
+    unrestricted: bool = Field(default=False)
     # The store path of the `closureInfo` `store-paths` file for this grant's
     # packages (emitted by Nix). `closure_paths` is its realized contents — the
     # exact store paths the jail binds, so the capability reaches its declared
@@ -46,9 +46,7 @@ class Grant(BaseModel):
                     f"packageBins entry '{entry}' must be under /nix/store"
                 )
             if not entry.endswith("/bin"):
-                raise ValueError(
-                    f"packageBins entry '{entry}' must end with /bin"
-                )
+                raise ValueError(f"packageBins entry '{entry}' must end with /bin")
         return v
 
     @field_validator("writable")
@@ -56,13 +54,9 @@ class Grant(BaseModel):
     def _validate_writable(cls, v: list[str]) -> list[str]:
         for entry in v:
             if entry.startswith("/"):
-                raise ValueError(
-                    f"writable path '{entry}' must be relative"
-                )
+                raise ValueError(f"writable path '{entry}' must be relative")
             if ".." in entry.split("/"):
-                raise ValueError(
-                    f"writable path '{entry}' escapes the work tree"
-                )
+                raise ValueError(f"writable path '{entry}' escapes the work tree")
         return v
 
     @field_validator("closure_file")
@@ -81,11 +75,11 @@ class Grant(BaseModel):
 
 
 class Param(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     type: Literal["string", "integer", "boolean", "array"]
     description: str = ""
-    required: bool = Field(default=False, strict=True)
+    required: bool = Field(default=False)
     enum: list[Any] | None = None
 
     @model_validator(mode="after")
@@ -109,7 +103,7 @@ class Param(BaseModel):
 
 
 class Capability(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     name: str
     description: str = ""
@@ -160,9 +154,7 @@ class Capability(BaseModel):
                 raise ValueError("control capability must not declare grants")
         else:
             if self.control is not None:
-                raise ValueError(
-                    "'control' is only valid for kind 'control'"
-                )
+                raise ValueError("'control' is only valid for kind 'control'")
         if self.kind == "background":
             if self.grants.unrestricted:
                 raise ValueError("background capability cannot be unrestricted")
@@ -177,9 +169,7 @@ class Capability(BaseModel):
     def _validate_runner_placeholders(self) -> Self:
         for _, field_name, _, _ in string.Formatter().parse(self.runner):
             if field_name and field_name not in self.params:
-                raise ValueError(
-                    f"runner references undeclared param '{field_name}'"
-                )
+                raise ValueError(f"runner references undeclared param '{field_name}'")
         return self
 
 
@@ -212,7 +202,7 @@ class ModelConfig(BaseModel):
     Nix store.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     base_url: str | None = None
     name: str | None = None
@@ -249,9 +239,7 @@ class ModelConfig(BaseModel):
                     f"model sampling key '{key}' is reserved and cannot be overridden"
                 )
             if isinstance(val, bool) or not isinstance(val, (int, float)):
-                raise ValueError(
-                    f"model sampling '{key}' must be a number"
-                )
+                raise ValueError(f"model sampling '{key}' must be a number")
         return v
 
 
@@ -259,7 +247,7 @@ class ModelConfig(BaseModel):
 
 
 class Manifest(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     tools: list[dict]
     capabilities: dict[str, Capability]
@@ -306,13 +294,9 @@ class Manifest(BaseModel):
             if not entry:
                 continue
             if not entry.startswith("/nix/store/"):
-                raise ValueError(
-                    f"shellPath entry '{entry}' must be under /nix/store"
-                )
+                raise ValueError(f"shellPath entry '{entry}' must be under /nix/store")
             if not entry.endswith("/bin"):
-                raise ValueError(
-                    f"shellPath entry '{entry}' must end with /bin"
-                )
+                raise ValueError(f"shellPath entry '{entry}' must end with /bin")
         return v
 
     @model_validator(mode="after")
@@ -347,9 +331,7 @@ def _validate_tool_schema_against_params(
         )
     required = schema.get("required", [])
     if not isinstance(required, list):
-        raise ValueError(
-            f"tool '{capability.name}' parameters required must be a list"
-        )
+        raise ValueError(f"tool '{capability.name}' parameters required must be a list")
 
     schema_properties = set(properties.keys())
     schema_required = set(required)

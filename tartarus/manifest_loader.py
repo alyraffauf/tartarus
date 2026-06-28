@@ -133,8 +133,7 @@ def _map_manifest_raw(raw: dict[str, Any]) -> dict[str, Any]:
 def _map_capabilities(raw: object) -> dict[str, Any]:
     capabilities = _require_object(raw, "manifest 'capabilities'")
     return {
-        name: _map_capability_raw(name, body)
-        for name, body in capabilities.items()
+        name: _map_capability_raw(name, body) for name, body in capabilities.items()
     }
 
 
