@@ -1,6 +1,6 @@
 # Tartarus
 
-A framework for building composable, hermetic, and shareable AI agents with Nix.
+An experimental framework for building composable, hermetic, and shareable AI agents with Nix.
 
 Tartarus turns an agent definition into a runnable, sandboxed system. You
 declare the agent's tools, permissions, and policies in a Nix flake. Nix
