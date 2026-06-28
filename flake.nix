@@ -91,6 +91,7 @@
               (python3.withPackages (p: [
                 p.httpx
                 p.pip
+                p.pydantic
                 p.pytest
               ]))
             ];
