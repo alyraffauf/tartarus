@@ -10,17 +10,15 @@ plain raw-socket containment is a later namespace/firewall step. Unrestricted
 grants skip bwrap entirely after policy approval, but still use the shell PATH.
 """
 
+import asyncio
 import os
 import signal
 import shlex
 import shutil
 import subprocess
-import threading
-import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from queue import Empty, Queue
 from typing import Literal
 
 from pydantic import ConfigDict, ValidationError, field_validator
@@ -128,31 +126,29 @@ class JailBuilder:
         except ValidationError as error:
             raise JailError(str(error)) from error
 
-    def exec(
+    async def exec(
         self,
         spec: JailSpec,
         command: str,
         timeout: int | None = DEFAULT_JAIL_TIMEOUT_SECONDS,
         output_callback: Callable[[str], None] | None = None,
-        cancellation: threading.Event | None = None,
     ) -> ExecResult:
         if spec.unrestricted:
-            return self._exec_unrestricted(
-                spec, command, timeout, output_callback, cancellation
+            return await self._exec_unrestricted(
+                spec, command, timeout, output_callback
             )
 
         if spec.network == "proxy":
             with self._proxy_factory(spec.allowed_hosts) as proxy:
-                result = self._exec_argv(
+                result = await self._exec_argv(
                     self._bwrap_argv(spec, command, proxy.url),
                     timeout,
                     output_callback,
-                    cancellation,
                 )
                 return _append_stderr(result, proxy.summary())
 
-        return self._exec_argv(
-            self._bwrap_argv(spec, command), timeout, output_callback, cancellation
+        return await self._exec_argv(
+            self._bwrap_argv(spec, command), timeout, output_callback
         )
 
     def exec_background(self, spec: JailSpec, command: str) -> BackgroundHandle:
@@ -211,44 +207,40 @@ class JailBuilder:
         os.makedirs(bg_dir, exist_ok=True)
         return os.path.join(bg_dir, f"{uuid.uuid4().hex}.log")
 
-    def _exec_argv(
+    async def _exec_argv(
         self,
         argv: list[str],
         timeout: int | None,
         output_callback: Callable[[str], None] | None = None,
-        cancellation: threading.Event | None = None,
     ) -> ExecResult:
         try:
-            proc = subprocess.Popen(
-                argv,
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
                 env={},
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,  # isolate process group for timeout kills
             )
         except FileNotFoundError as missing:
             raise JailError(f"jail runtime not found: {missing}") from missing
 
-        return _wait_for_process(proc, timeout, output_callback, cancellation)
+        return await _wait_for_process(proc, timeout, output_callback)
 
-    def _exec_unrestricted(
+    async def _exec_unrestricted(
         self,
         spec: JailSpec,
         command: str,
         timeout: int | None,
         output_callback: Callable[[str], None] | None = None,
-        cancellation: threading.Event | None = None,
     ) -> ExecResult:
         env = {"PATH": self._compose_path(spec), **spec.base_env}
         try:
-            proc = subprocess.Popen(
-                shlex.split(command),
+            proc = await asyncio.create_subprocess_exec(
+                *shlex.split(command),
                 cwd=spec.work_tree,
                 env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
             )
         except FileNotFoundError as missing:
@@ -256,7 +248,7 @@ class JailBuilder:
                 f"unrestricted command runtime not found: {missing}"
             ) from missing
 
-        return _wait_for_process(proc, timeout, output_callback, cancellation)
+        return await _wait_for_process(proc, timeout, output_callback)
 
     def _bwrap_argv(
         self,
@@ -352,112 +344,100 @@ class JailBuilder:
         return ":".join([spec.shell_path, *spec.extra_path])
 
 
-def _wait_for_process(
-    proc: subprocess.Popen,
+async def _wait_for_process(
+    proc: asyncio.subprocess.Process,
     timeout: int | None,
     output_callback: Callable[[str], None] | None,
-    cancellation: threading.Event | None,
 ) -> ExecResult:
-    output_queue: Queue[tuple[str, str | None]] = Queue()
     stdout_parts: list[str] = []
     stderr_parts: list[str] = []
-    threads = [
-        _start_pipe_reader(proc.stdout, "stdout", output_queue),
-        _start_pipe_reader(proc.stderr, "stderr", output_queue),
+    # Drain both pipes concurrently so a chatty command can never deadlock on a
+    # full pipe buffer; each reader ends at EOF when the process closes the pipe.
+    pumps = [
+        asyncio.create_task(_pump(proc.stdout, stdout_parts, output_callback)),
+        asyncio.create_task(_pump(proc.stderr, stderr_parts, output_callback)),
     ]
-    deadline = None if timeout is None else time.monotonic() + timeout
-    termination_error: str | None = None
 
-    while proc.poll() is None:
-        _drain_output_queue(output_queue, stdout_parts, stderr_parts, output_callback)
-        if cancellation is not None and cancellation.is_set():
-            termination_error = "command cancelled"
-            _terminate_process_group(proc)
-            break
-        if deadline is not None and time.monotonic() >= deadline:
-            termination_error = f"command timed out after {timeout}s"
-            _terminate_process_group(proc)
-            break
-        time.sleep(0.01)
+    try:
+        async with asyncio.timeout(timeout):  # timeout=None waits indefinitely
+            await asyncio.gather(*pumps)
+            await proc.wait()
+    except TimeoutError:
+        await _kill_and_drain(proc, pumps)
+        stderr = _with_note(
+            "".join(stderr_parts), f"command timed out after {timeout}s"
+        )
+        return ExecResult(TIMEOUT_EXIT_CODE, "".join(stdout_parts), stderr)
+    except asyncio.CancelledError:
+        # The turn was aborted (Ctrl-C / task.cancel): tear the process tree down
+        # before unwinding, then let cancellation propagate to the agent loop.
+        await _kill_and_drain(proc, pumps)
+        raise
 
-    proc.wait()
-    for thread in threads:
-        thread.join()
-    _drain_output_queue(output_queue, stdout_parts, stderr_parts, output_callback)
-
-    stdout = "".join(stdout_parts)
-    stderr = "".join(stderr_parts)
-    if termination_error is not None:
-        stderr = "\n".join(part for part in (stderr.strip(), termination_error) if part)
-        if stderr:
-            stderr += "\n"
-        return ExecResult(TIMEOUT_EXIT_CODE, stdout, stderr)
-    return ExecResult(proc.returncode, stdout, stderr)
+    code = proc.returncode
+    assert code is not None  # set once proc.wait() has returned
+    return ExecResult(code, "".join(stdout_parts), "".join(stderr_parts))
 
 
-def _start_pipe_reader(pipe, stream_name: str, output_queue: Queue):
-    def read_lines() -> None:
-        if pipe is None:
-            output_queue.put((stream_name, None))
-            return
-        try:
-            for line in pipe:
-                output_queue.put((stream_name, line))
-        finally:
-            pipe.close()
-            output_queue.put((stream_name, None))
-
-    thread = threading.Thread(
-        target=read_lines,
-        name=f"tartarus-{stream_name}-reader",
-        daemon=True,
-    )
-    thread.start()
-    return thread
-
-
-def _drain_output_queue(
-    output_queue: Queue[tuple[str, str | None]],
-    stdout_parts: list[str],
-    stderr_parts: list[str],
+async def _pump(
+    stream: asyncio.StreamReader | None,
+    parts: list[str],
     output_callback: Callable[[str], None] | None,
 ) -> None:
+    """Forward one pipe to `parts` line by line, mirroring to the callback."""
+    if stream is None:
+        return
     while True:
-        try:
-            stream_name, text = output_queue.get_nowait()
-        except Empty:
+        line = await stream.readline()
+        if not line:
             return
-        if text is None:
-            continue
-        if stream_name == "stdout":
-            stdout_parts.append(text)
-        else:
-            stderr_parts.append(text)
+        text = line.decode(errors="replace")
+        parts.append(text)
         if output_callback is not None:
             output_callback(text)
 
 
-def _terminate_process_group(proc: subprocess.Popen) -> None:
+async def _kill_and_drain(
+    proc: asyncio.subprocess.Process,
+    pumps: list[asyncio.Task],
+) -> None:
+    """Tear the process group down and let the reader coroutines finish."""
+    await _terminate_process_group(proc)
+    await asyncio.gather(*pumps, return_exceptions=True)
+
+
+async def _terminate_process_group(proc: asyncio.subprocess.Process) -> None:
+    """SIGTERM the whole session, escalating to SIGKILL if it lingers.
+
+    `start_new_session=True` made the child its own session leader, so its pid is
+    the process-group id and one `killpg` reaches the entire tree.
+    """
     try:
         os.killpg(proc.pid, signal.SIGTERM)
     except ProcessLookupError:
-        # The process group may already be gone; fall through so we still reap
-        # any stragglers below.
-        pass
+        return  # already gone; nothing left to reap
     try:
-        proc.wait(timeout=1)
-    except subprocess.TimeoutExpired:
+        await asyncio.wait_for(proc.wait(), timeout=1)
+    except TimeoutError:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        await proc.wait()
+
+
+def _with_note(stderr: str, note: str) -> str:
+    combined = "\n".join(part for part in (stderr.strip(), note) if part)
+    return combined + "\n" if combined else ""
 
 
 def _append_stderr(result: ExecResult, message: str) -> ExecResult:
-    stderr = "\n".join(part for part in (result.stderr.strip(), message) if part)
-    if stderr:
-        stderr += "\n"
-    return ExecResult(result.code, result.stdout, stderr, network_summary=message)
+    return ExecResult(
+        result.code,
+        result.stdout,
+        _with_note(result.stderr, message),
+        network_summary=message,
+    )
 
 
 def _store_bind_args(bind_paths: list[str]) -> list[str]:

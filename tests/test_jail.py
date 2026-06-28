@@ -5,6 +5,7 @@ prove the security invariants: confinement, content purity, and reach
 isolation.
 """
 
+import asyncio
 import shutil
 import shlex
 import subprocess
@@ -23,6 +24,11 @@ _NEEDS_SANDBOX = pytest.mark.skipif(
     shutil.which("bwrap") is None or shutil.which("nix") is None,
     reason="requires bwrap and nix",
 )
+
+
+def _exec(jail, *args, **kwargs):
+    """Drive the async JailBuilder.exec to completion from a sync test."""
+    return asyncio.run(jail.exec(*args, **kwargs))
 
 
 def _store_root(path: str) -> str:
@@ -60,7 +66,7 @@ def shell_closure(shell_path):
 @_NEEDS_SANDBOX
 def test_echo_runs_confined(tmp_path, shell_path, shell_closure):
     jail = JailBuilder(str(tmp_path), shell_path, shell_closure=shell_closure)
-    result = jail.exec(jail.build(Grant()), "echo banana")
+    result = _exec(jail, jail.build(Grant()), "echo banana")
 
     assert result.code == 0
     assert "banana" in result.stdout
@@ -73,7 +79,7 @@ def test_bwrap_parent_environment_does_not_leak_into_proc(
     monkeypatch.setenv("TARTARUS_TEST_HOST_SECRET", "secret-from-host-env")
     jail = JailBuilder(str(tmp_path), shell_path, shell_closure=shell_closure)
 
-    result = jail.exec(jail.build(Grant()), "cat /proc/1/environ")
+    result = _exec(jail, jail.build(Grant()), "cat /proc/1/environ")
 
     assert "TARTARUS_TEST_HOST_SECRET" not in result.stdout
     assert "secret-from-host-env" not in result.stdout
@@ -87,7 +93,8 @@ def test_proc_file_descriptors_are_not_available_for_output_injection(
 ):
     jail = JailBuilder(str(tmp_path), shell_path, shell_closure=shell_closure)
 
-    result = jail.exec(
+    result = _exec(
+        jail,
         jail.build(Grant()),
         "bash -c 'echo injected-output > /proc/1/fd/1; echo normal-output'",
     )
@@ -102,7 +109,7 @@ def test_host_only_tool_is_absent_inside_jail(tmp_path, shell_path, shell_closur
     jail = JailBuilder(str(tmp_path), shell_path, shell_closure=shell_closure)
     # git is not in the shell closure and was not granted, so it cannot resolve
     # by name even though the baseline shell binaries do.
-    result = jail.exec(jail.build(Grant()), "git --version")
+    result = _exec(jail, jail.build(Grant()), "git --version")
 
     assert result.code != 0
     assert "no such file" in result.stderr.lower()
@@ -122,7 +129,7 @@ def test_ungranted_tool_unreachable_by_absolute_store_path(
         pytest.skip(f"cannot resolve git package: {error}")
 
     jail = JailBuilder(str(tmp_path), shell_path, shell_closure=shell_closure)
-    result = jail.exec(jail.build(Grant()), f"{shlex.quote(git_bin)}/git --version")
+    result = _exec(jail, jail.build(Grant()), f"{shlex.quote(git_bin)}/git --version")
 
     assert result.code != 0
     assert "no such file" in result.stderr.lower()
@@ -131,7 +138,7 @@ def test_ungranted_tool_unreachable_by_absolute_store_path(
 @_NEEDS_SANDBOX
 def test_no_host_filesystem_beyond_work_tree(tmp_path, shell_path, shell_closure):
     jail = JailBuilder(str(tmp_path), shell_path, shell_closure=shell_closure)
-    result = jail.exec(jail.build(Grant()), "ls /")
+    result = _exec(jail, jail.build(Grant()), "ls /")
 
     visible = set(result.stdout.split())
     assert visible <= {"dev", "nix", "proc", "work"}
@@ -143,7 +150,7 @@ def test_no_host_filesystem_beyond_work_tree(tmp_path, shell_path, shell_closure
 def test_no_network_interfaces_inside_jail(tmp_path, shell_path, shell_closure):
     jail = JailBuilder(str(tmp_path), shell_path, shell_closure=shell_closure)
     # --unshare-all removed the network namespace, so /sys/class/net is gone.
-    result = jail.exec(jail.build(Grant()), "ls /sys/class/net")
+    result = _exec(jail, jail.build(Grant()), "ls /sys/class/net")
 
     assert result.code != 0
 
@@ -187,7 +194,7 @@ def test_proxy_jail_routes_curl_through_allowed_host(
             )
         )
 
-        result = jail.exec(spec, f"curl -fsS http://{upstream_host}:{upstream_port}/")
+        result = _exec(jail, spec, f"curl -fsS http://{upstream_host}:{upstream_port}/")
 
         assert result.code == 0
         assert result.stdout == "hello"
@@ -214,7 +221,7 @@ def test_proxy_jail_blocks_unlisted_host(tmp_path, shell_path, shell_closure):
             )
         )
 
-        result = jail.exec(spec, f"curl -fsS http://{upstream_host}:{upstream_port}/")
+        result = _exec(jail, spec, f"curl -fsS http://{upstream_host}:{upstream_port}/")
 
         assert result.code != 0
         assert "proxy decisions: 0 allowed, 1 blocked" in result.stderr
@@ -232,8 +239,8 @@ def test_writable_grant_allows_only_declared_path(tmp_path, shell_path, shell_cl
     jail = JailBuilder(str(tmp_path), shell_path, shell_closure=shell_closure)
     spec = jail.build(Grant(writable=["allowed"]))
 
-    allowed = jail.exec(spec, "bash -c 'echo yes > allowed/file.txt'")
-    denied = jail.exec(spec, "bash -c 'echo no > readonly/file.txt'")
+    allowed = _exec(jail, spec, "bash -c 'echo yes > allowed/file.txt'")
+    denied = _exec(jail, spec, "bash -c 'echo no > readonly/file.txt'")
 
     assert allowed.code == 0
     assert (writable_dir / "file.txt").read_text().strip() == "yes"
@@ -308,7 +315,7 @@ def test_unrestricted_grant_bypasses_bwrap_after_approval_path(tmp_path):
     jail = JailBuilder(str(work_tree), str(bin_dir))
     spec = jail.build(Grant(unrestricted=True))
 
-    result = jail.exec(spec, "read-secret")
+    result = _exec(jail, spec, "read-secret")
 
     assert result.code == 0
     assert result.stdout == "outside work tree"
@@ -320,7 +327,8 @@ def test_exec_streams_unrestricted_output_lines(tmp_path):
     lines: list[str] = []
     code = "import sys; print('one', flush=True); print('two', flush=True)"
 
-    result = jail.exec(
+    result = _exec(
+        jail,
         spec,
         f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}",
         output_callback=lines.append,
@@ -331,32 +339,50 @@ def test_exec_streams_unrestricted_output_lines(tmp_path):
     assert lines == ["one\n", "two\n"]
 
 
-def test_exec_cancellation_stops_unrestricted_process(tmp_path):
+_SLOW_PROGRAM = (
+    "import time; "
+    "print('started', flush=True); "
+    "time.sleep(10); "
+    "print('finished', flush=True)"
+)
+
+
+def test_exec_timeout_kills_unrestricted_process(tmp_path):
     jail = JailBuilder(str(tmp_path), "/unused/bin")
     spec = jail.build(Grant(unrestricted=True))
-    cancellation = threading.Event()
-    lines: list[str] = []
-    code = (
-        "import time; "
-        "print('started', flush=True); "
-        "time.sleep(10); "
-        "print('finished', flush=True)"
-    )
 
-    def capture(line: str) -> None:
-        lines.append(line)
-        cancellation.set()
-
-    result = jail.exec(
+    result = _exec(
+        jail,
         spec,
-        f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}",
-        output_callback=capture,
-        cancellation=cancellation,
+        f"{shlex.quote(sys.executable)} -c {shlex.quote(_SLOW_PROGRAM)}",
+        timeout=1,
     )
 
     assert result.code == 124
+    assert result.stdout == "started\n"
+    assert "timed out" in result.stderr
+
+
+def test_exec_cancellation_terminates_unrestricted_process(tmp_path):
+    jail = JailBuilder(str(tmp_path), "/unused/bin")
+    spec = jail.build(Grant(unrestricted=True))
+    lines: list[str] = []
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(_SLOW_PROGRAM)}"
+
+    async def run_and_cancel():
+        task = asyncio.create_task(
+            jail.exec(spec, command, output_callback=lines.append)
+        )
+        while not lines:
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_and_cancel())
+
+    # The process was killed during its sleep, so its later output never arrives.
     assert lines == ["started\n"]
-    assert "command cancelled" in result.stderr
 
 
 class _HelloHandler(BaseHTTPRequestHandler):

@@ -1,7 +1,6 @@
 import asyncio
 import shlex
 import subprocess
-import threading
 from collections.abc import AsyncIterator
 from typing import cast
 
@@ -28,9 +27,7 @@ class LocalJail:
     def build(self, grant):
         return grant
 
-    def exec(
-        self, spec, command, timeout=None, output_callback=None, cancellation=None
-    ):
+    async def exec(self, spec, command, timeout=None, output_callback=None):
         completed = subprocess.run(shlex.split(command), capture_output=True, text=True)
         if output_callback is not None and completed.stdout:
             output_callback(completed.stdout)
@@ -227,25 +224,25 @@ def test_cancel_mid_turn_leaves_a_valid_transcript():
     assert messages == [{"role": "user", "content": "hi"}]
 
 
-def test_aclose_mid_tool_sets_cancellation_and_leaves_transcript():
-    """Closing the turn generator while a tool is running must signal the jail
-    to terminate instead of leaking the worker or committing a result."""
+def test_aclose_mid_tool_cancels_worker_and_leaves_transcript():
+    """Closing the turn generator while a tool is running must cancel the worker
+    so the jail terminates, instead of leaking it or committing a result."""
     manifest = echo_manifest()
 
     class CancellingBroker:
         def __init__(self):
-            self.cancelled = threading.Event()
+            self.cancelled = False
 
-        def handle(self, call, output_callback=None, cancellation=None):
-            # Emit a chunk so the caller can advance past ToolStarted and then
-            # close the generator while this worker is still running.
+        async def handle(self, call, output_callback=None):
+            # Emit a chunk so the caller can advance past ToolStarted, then block
+            # until the worker is cancelled by the closing turn.
             if output_callback is not None:
                 output_callback("partial output")
-            # Block the worker until the loop has signalled cancellation, proving
-            # the aclose path propagated the cancellation event.
-            if cancellation is not None:
-                cancellation.wait(timeout=5)
-                self.cancelled.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
             return ToolResult(call.id, "should-not-appear", is_error=False)
 
     provider = ScriptedProvider(
@@ -271,28 +268,30 @@ def test_aclose_mid_tool_sets_cancellation_and_leaves_transcript():
 
     asyncio.run(run_and_cancel())
 
-    # The closing handshake signalled cancellation and did not commit anything.
-    assert broker.cancelled.is_set()
+    # The closing handshake cancelled the worker and did not commit anything.
+    assert broker.cancelled
     assert messages == [{"role": "user", "content": "use echo"}]
 
 
 def test_task_cancel_mid_tool_terminates_worker_synchronously():
     """The CLI cancels an in-flight turn with ``task.cancel()`` (not ``aclose``).
     That CancelledError chains through ``__anext__`` into ``_run_tool``'s own
-    ``await``, so the jail's cancellation event must be set — and the worker
-    torn down — before awaiting the cancelled task returns."""
+    ``await``, which cancels the worker and awaits its teardown before the
+    cancelled task returns."""
     manifest = echo_manifest()
 
     class CancellingBroker:
         def __init__(self):
-            self.cancelled = threading.Event()
+            self.cancelled = False
 
-        def handle(self, call, output_callback=None, cancellation=None):
+        async def handle(self, call, output_callback=None):
             if output_callback is not None:
                 output_callback("partial output")
-            if cancellation is not None:
-                cancellation.wait(timeout=5)
-                self.cancelled.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
             return ToolResult(call.id, "should-not-appear", is_error=False)
 
     provider = ScriptedProvider(
@@ -326,7 +325,7 @@ def test_task_cancel_mid_tool_terminates_worker_synchronously():
         except asyncio.CancelledError:
             pass
         # Teardown is synchronous on this path: no extra loop pumping needed.
-        return broker.cancelled.is_set()
+        return broker.cancelled
 
     cancelled_on_return = asyncio.run(run_and_cancel())
 

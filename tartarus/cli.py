@@ -381,7 +381,7 @@ async def _async_main(argv: list[str]) -> int:
         shell_closure=manifest.shell_closure,
     )
     policy = PolicyEngine(headless=config.headless)
-    # Background tasks: the registry bridges the sync broker to this async loop.
+    # Background tasks: the registry monitors detached runs on this async loop.
     # Completion notices land on `notices`, which the run drains to inject
     # follow-up turns; `shutdown_all` reaps every task on exit.
     notices: asyncio.Queue[Notice] = asyncio.Queue()

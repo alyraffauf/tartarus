@@ -5,10 +5,10 @@ human), then run inside a bwrap jail via the injected JailBuilder. Argument
 validation and shell-safe interpolation are permanent and shared by all phases.
 """
 
+import asyncio
 import shlex
 from collections import defaultdict
 from collections.abc import Callable
-from threading import Event
 
 from tartarus.audit import AuditEvent, AuditSink, NullAuditLog
 from tartarus.background import BackgroundError, BackgroundRegistry
@@ -91,11 +91,10 @@ class Broker:
         self._audit = audit if audit is not None else NullAuditLog()
         self._registry = registry
 
-    def handle(
+    async def handle(
         self,
         call: ToolCall,
         output_callback: Callable[[str], None] | None = None,
-        cancellation: Event | None = None,
     ) -> ToolResult:
         if call.argument_error:
             return self._audited_error(
@@ -121,25 +120,27 @@ class Broker:
                 decision=_broker_decision(f"invalid arguments: {validation_error}"),
             )
 
-        return self._run(
+        return await self._run(
             call.id,
             capability,
             call.arguments,
             output_callback=output_callback,
-            cancellation=cancellation,
         )
 
-    def _run(
+    async def _run(
         self,
         call_id: str,
         capability: Capability,
         arguments: dict,
         output_callback: Callable[[str], None] | None = None,
-        cancellation: Event | None = None,
     ) -> ToolResult:
         command = interpolate(capability.runner, arguments)
 
-        decision = self._policy.decide(capability, arguments, command)
+        # The policy may prompt the human (blocking input); keep it off the event
+        # loop so an ask-* approval never stalls concurrent streaming/cancellation.
+        decision = await asyncio.to_thread(
+            self._policy.decide, capability, arguments, command
+        )
         if not decision.allowed:
             return self._finish(
                 AuditEvent(
@@ -160,17 +161,16 @@ class Broker:
             return self._run_background(
                 call_id, capability, arguments, command, decision
             )
-        return self._run_command(
+        return await self._run_command(
             call_id,
             capability,
             arguments,
             command,
             decision,
             output_callback=output_callback,
-            cancellation=cancellation,
         )
 
-    def _run_command(
+    async def _run_command(
         self,
         call_id: str,
         capability: Capability,
@@ -178,18 +178,16 @@ class Broker:
         command: str,
         decision: Decision,
         output_callback: Callable[[str], None] | None = None,
-        cancellation: Event | None = None,
     ) -> ToolResult:
         # A capability runs unbounded unless it declares its own timeout;
         # None means "wait forever" in the jail's process wait loop.
         try:
             spec = self._jail.build(capability.grants)
-            result = self._jail.exec(
+            result = await self._jail.exec(
                 spec,
                 command,
                 timeout=capability.timeout,
                 output_callback=output_callback,
-                cancellation=cancellation,
             )
         except JailError as error:
             return self._jail_error(

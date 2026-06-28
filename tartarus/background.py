@@ -5,10 +5,8 @@ handed here. The registry assigns it a short id (`bg-1`, `bg-2`, …), tails its
 combined output, and reports liveness to the control-plane capabilities
 (`bg_status` / `bg_output` / `bg_stop`).
 
-This object bridges two worlds: the **sync broker** registers a task from a
-worker thread (`Broker.handle` runs under `asyncio.to_thread`), while the
-**async loop** owns the completion notifications. `register` is therefore
-thread-safe and schedules the per-task monitor onto the captured event loop;
+The broker registers tasks inline on the event loop thread. The registry
+spawns a per-task asyncio monitor for completion notifications.
 `status`/`output` refresh liveness directly so they work even with no loop
 attached (e.g. unit tests that poll).
 """
@@ -84,8 +82,7 @@ class BackgroundRegistry:
             )
             self._tasks[bg_id] = task
         if self._loop is not None:
-            # register runs in the broker's worker thread; hop to the loop thread.
-            self._loop.call_soon_threadsafe(self._start_monitor, task)
+            self._loop.call_soon(self._start_monitor, task)
         return bg_id
 
     # --- control-plane operations (called by the broker) --------------------

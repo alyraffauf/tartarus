@@ -12,7 +12,6 @@ mid-stream or mid-tool always leaves a valid transcript.
 """
 
 import asyncio
-import threading
 from dataclasses import dataclass
 
 from tartarus.broker import Broker
@@ -102,16 +101,14 @@ class AgentLoop:
             messages.extend(self._provider.tool_result_messages(results))
 
     async def _run_tool(self, call: ToolCall):
-        event_loop = asyncio.get_running_loop()
         output_queue: asyncio.Queue[str] = asyncio.Queue()
-        cancellation = threading.Event()
 
+        # The broker runs on this loop, so streamed output lands on the queue
+        # directly.
         def emit_output(text: str) -> None:
-            event_loop.call_soon_threadsafe(output_queue.put_nowait, text)
+            output_queue.put_nowait(text)
 
-        worker = asyncio.create_task(
-            asyncio.to_thread(self._broker.handle, call, emit_output, cancellation)
-        )
+        worker = asyncio.create_task(self._broker.handle(call, emit_output))
         pending_get: asyncio.Task[str] | None = None
         try:
             while True:
@@ -134,10 +131,12 @@ class AgentLoop:
                     yield worker.result()
                     return
         except (asyncio.CancelledError, GeneratorExit):
-            cancellation.set()
+            # Cancel the worker and await it shielded so the jail tears its
+            # process group down before the turn unwinds.
+            worker.cancel()
             try:
                 await asyncio.shield(worker)
-            except Exception:
+            except (asyncio.CancelledError, Exception):
                 pass
             raise
         finally:

@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from tartarus.audit import AuditEvent
@@ -34,13 +36,12 @@ class FakeJail(JailBuilder):
         self.built_grants.append(grant)
         return JailSpec(work_tree="", shell_path="", base_env={})
 
-    def exec(
+    async def exec(
         self,
         spec: JailSpec,
         command: str,
         timeout: int | None = 0,
         output_callback=None,
-        cancellation=None,
     ) -> ExecResult:
         self.exec_commands.append(command)
         self.exec_timeouts.append(timeout)
@@ -96,6 +97,11 @@ def _call(name, arguments, argument_error=None):
     )
 
 
+def _handle(broker, call):
+    """Drive the async broker to completion from a sync test."""
+    return asyncio.run(broker.handle(call))
+
+
 def _broker(jail=None, policy=None, audit=None):
     return Broker(
         echo_manifest(),
@@ -109,7 +115,7 @@ def test_echo_round_trips_through_jail():
     jail = FakeJail(result=ExecResult(0, "hello world", ""))
     broker = _broker(jail)
 
-    result = broker.handle(_call("echo", {"message": "hello world"}))
+    result = _handle(broker, _call("echo", {"message": "hello world"}))
 
     assert not result.is_error
     assert result.output == "hello world"
@@ -121,7 +127,7 @@ def test_allowed_call_records_one_audit_event():
     jail = FakeJail(result=ExecResult(0, "hello world", ""))
     broker = _broker(jail, audit=audit)
 
-    broker.handle(_call("echo", {"message": "hello world"}))
+    _handle(broker, _call("echo", {"message": "hello world"}))
 
     assert len(audit.events) == 1
     event = audit.events[0]
@@ -140,7 +146,7 @@ def test_nonzero_exit_is_reported_as_error():
     jail = FakeJail(result=ExecResult(1, "", "boom"))
     broker = _broker(jail)
 
-    result = broker.handle(_call("echo", {"message": "x"}))
+    result = _handle(broker, _call("echo", {"message": "x"}))
 
     assert result.is_error
     assert "boom" in result.output
@@ -152,7 +158,7 @@ def test_undeclared_timeout_runs_unbounded():
     jail = FakeJail(result=ExecResult(0, "hi", ""))
     broker = _broker(jail)
 
-    broker.handle(_call("echo", {"message": "x"}))
+    _handle(broker, _call("echo", {"message": "x"}))
 
     assert jail.exec_timeouts == [None]
 
@@ -170,7 +176,7 @@ def test_declared_timeout_reaches_the_jail():
     jail = FakeJail(result=ExecResult(0, "ok", ""))
     broker = Broker(build_manifest({"run_tests": capability}), jail, PolicyEngine())
 
-    broker.handle(_call("run_tests", {}))
+    _handle(broker, _call("run_tests", {}))
 
     assert jail.exec_timeouts == [300]
 
@@ -179,7 +185,7 @@ def test_output_truncate_is_configurable():
     jail = FakeJail(result=ExecResult(0, "abcdef", ""))
     broker = Broker(echo_manifest(), jail, PolicyEngine(), output_truncate=3)
 
-    result = broker.handle(_call("echo", {"message": "x"}))
+    result = _handle(broker, _call("echo", {"message": "x"}))
 
     assert result.output == "abc\n...(truncated)"
 
@@ -189,7 +195,7 @@ def test_jail_error_is_surfaced_not_raised():
     jail = FakeJail(error=JailError("network grants not implemented"))
     broker = _broker(jail, audit=audit)
 
-    result = broker.handle(_call("echo", {"message": "x"}))
+    result = _handle(broker, _call("echo", {"message": "x"}))
 
     assert result.is_error
     assert "jail error" in result.output
@@ -203,7 +209,7 @@ def test_unknown_tool_never_reaches_the_jail():
     jail = FakeJail()
     broker = _broker(jail, audit=audit)
 
-    result = broker.handle(_call("nope", {}))
+    result = _handle(broker, _call("nope", {}))
 
     assert result.is_error
     assert "unknown tool" in result.output
@@ -219,7 +225,7 @@ def test_malformed_arguments_never_reach_the_jail():
     jail = FakeJail()
     broker = _broker(jail, audit=audit)
 
-    result = broker.handle(_call("echo", {}, argument_error="bad JSON"))
+    result = _handle(broker, _call("echo", {}, argument_error="bad JSON"))
 
     assert result.is_error
     assert "invalid arguments" in result.output
@@ -232,7 +238,7 @@ def test_missing_required_argument_never_reaches_the_jail():
     jail = FakeJail()
     broker = _broker(jail)
 
-    result = broker.handle(_call("echo", {}))
+    result = _handle(broker, _call("echo", {}))
 
     assert result.is_error
     assert "missing required parameter 'message'" in result.output
@@ -253,7 +259,7 @@ def test_deny_capability_never_reaches_the_jail():
     }
     broker = Broker(build_manifest(capabilities), jail, PolicyEngine())
 
-    result = broker.handle(_call("locked", {}))
+    result = _handle(broker, _call("locked", {}))
 
     assert result.is_error
     assert "denied" in result.output
@@ -294,7 +300,7 @@ def test_ask_always_decline_denies_and_skips_the_jail():
         audit=audit,
     )
 
-    result = broker.handle(_call("run_command", {"command": "ls"}))
+    result = _handle(broker, _call("run_command", {"command": "ls"}))
 
     assert result.is_error
     assert "denied" in result.output
@@ -313,7 +319,7 @@ def test_ask_always_approval_runs_command_in_jail():
         PolicyEngine(prompt=lambda *_: True),
     )
 
-    result = broker.handle(_call("run_command", {"command": "ls -la"}))
+    result = _handle(broker, _call("run_command", {"command": "ls -la"}))
 
     assert not result.is_error
     # The command is a single shell-escaped argument to bash -c.
@@ -328,7 +334,7 @@ def test_unrestricted_decline_denies_and_skips_the_jail():
         PolicyEngine(prompt=lambda *_: False),
     )
 
-    result = broker.handle(_call("shell_escape", {"command": "cat /etc/passwd"}))
+    result = _handle(broker, _call("shell_escape", {"command": "cat /etc/passwd"}))
 
     assert result.is_error
     assert "denied" in result.output
@@ -343,7 +349,7 @@ def test_unrestricted_approval_reaches_the_jail_builder():
         PolicyEngine(prompt=lambda *_: True),
     )
 
-    result = broker.handle(_call("shell_escape", {"command": "cat /etc/passwd"}))
+    result = _handle(broker, _call("shell_escape", {"command": "cat /etc/passwd"}))
 
     assert not result.is_error
     assert jail.built_grants == [Grant(unrestricted=True)]
@@ -387,7 +393,7 @@ def test_background_capability_launches_and_registers():
         registry=registry,
     )
 
-    result = broker.handle(_call("run_bg", {"command": "sleep 1"}))
+    result = _handle(broker, _call("run_bg", {"command": "sleep 1"}))
 
     assert not result.is_error
     assert result.output == "started bg-1"
@@ -400,7 +406,7 @@ def test_background_without_registry_reports_unavailable():
     jail = FakeJail()
     broker = Broker(_background_manifest(), jail, PolicyEngine(prompt=lambda *_: True))
 
-    result = broker.handle(_call("run_bg", {"command": "sleep 1"}))
+    result = _handle(broker, _call("run_bg", {"command": "sleep 1"}))
 
     assert result.is_error
     assert "not available" in result.output
@@ -417,7 +423,7 @@ def test_control_capability_dispatches_to_registry_not_jail():
         registry=registry,
     )
 
-    result = broker.handle(_call("bg_output", {"task": "bg-1"}))
+    result = _handle(broker, _call("bg_output", {"task": "bg-1"}))
 
     assert not result.is_error
     assert result.output == "output bg-1 from 0"
@@ -435,7 +441,7 @@ def test_control_stop_still_honors_policy():
         registry=registry,
     )
 
-    result = broker.handle(_call("bg_stop", {"task": "bg-1"}))
+    result = _handle(broker, _call("bg_stop", {"task": "bg-1"}))
 
     assert result.is_error
     assert "denied" in result.output
@@ -454,7 +460,7 @@ def test_control_unknown_task_is_reported_as_error():
         registry=RaisingRegistry(),
     )
 
-    result = broker.handle(_call("bg_status", {"task": "bg-9"}))
+    result = _handle(broker, _call("bg_status", {"task": "bg-9"}))
 
     assert result.is_error
     assert "unknown background task" in result.output
@@ -508,7 +514,7 @@ def test_shell_injection_is_escaped_before_it_reaches_the_jail():
     jail = FakeJail()
     broker = _broker(jail)
 
-    broker.handle(_call("echo", {"message": "hi; echo pwned"}))
+    _handle(broker, _call("echo", {"message": "hi; echo pwned"}))
 
     # The payload is quoted into a single argument; the injected command can't run.
     assert jail.exec_commands == ["echo 'hi; echo pwned'"]
