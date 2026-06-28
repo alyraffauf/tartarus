@@ -1,12 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "tartarus-nix"
 version = "0.1.0"
-description = "A Nix-defined containment runtime for auditable agents."
+description = "A framework for building composable, hermetic, and shareable AI agents with Nix."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "httpx>=0.28.1",
 ]
+
+[project.scripts]
+tartarus = "tartarus.cli:main"
 
 [dependency-groups]
 dev = [
@@ -18,3 +25,6 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["tartarus"]
