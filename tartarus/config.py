@@ -5,9 +5,12 @@ come from the environment and are never embedded in code. Defaults target OpenCo
 Zen so a single env var (OPENCODE_API_KEY) yields a working setup.
 """
 
+from __future__ import annotations
+
 import json
 import os
-from dataclasses import dataclass, field
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from tartarus.manifest import Manifest, Sampling
 
@@ -40,8 +43,11 @@ class ConfigError(Exception):
     """Raised when required configuration is missing or invalid."""
 
 
-@dataclass
-class Config:
+class Config(BaseModel):
+    """Mutable harness config built from environment variables."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     # The runtime fields are None when their env var is unset, so the agent's
     # `model` block can supply the value (resolve_runtime). An explicit env var
     # still wins. api_key is the exception: env-only, since it is a secret.
@@ -53,7 +59,7 @@ class Config:
     extra_headers: dict[str, str] | None = None
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     # Absolute path the agent operates on; bound into the jail as /work.
-    work_tree: str = field(default_factory=os.getcwd)
+    work_tree: str = Field(default_factory=os.getcwd)
     # Flake reference containing the selected agent output. Used to build the
     # agent bundle when no realized `bundle_path` is given.
     flake_ref: str = DEFAULT_FLAKE_REF
@@ -153,13 +159,14 @@ def load_config() -> Config:
     )
 
 
-@dataclass(frozen=True)
-class ResolvedRuntime:
+class ResolvedRuntime(BaseModel):
     """The effective backend binding for a run, after applying precedence.
 
     Per field: an explicit env var wins; otherwise the agent's `model` block;
     otherwise the built-in default. api_key is env-only (a secret) and required.
     """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     provider_type: str
     base_url: str
