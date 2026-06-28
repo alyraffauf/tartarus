@@ -331,3 +331,81 @@ def test_task_cancel_mid_tool_terminates_worker_synchronously():
 
     assert cancelled_on_return
     assert messages == [{"role": "user", "content": "use echo"}]
+
+
+def test_loop_survives_unknown_tool_call():
+    """When the model calls a tool not in the manifest, the broker returns an
+    error result and the loop continues normally (no crash, tool result recorded)."""
+    manifest = echo_manifest()
+    provider = ScriptedProvider(
+        [
+            AssistantTurn(
+                text=None,
+                tool_calls=[ToolCall("call-1", "nonexistent", {})],
+                raw={"role": "assistant"},
+                stop_reason="tool_calls",
+            ),
+            AssistantTurn(
+                text="I tried but the tool was not found.",
+                tool_calls=[],
+                raw={"role": "assistant"},
+                stop_reason="end",
+            ),
+        ]
+    )
+    loop = AgentLoop(
+        provider,
+        Broker(manifest, cast(JailBuilder, LocalJail()), PolicyEngine()),
+        manifest,
+        "system",
+    )
+
+    messages = [{"role": "user", "content": "use bad tool"}]
+    events = asyncio.run(_drain(loop, messages))
+
+    assert _text(events) == "I tried but the tool was not found."
+    finished = [e for e in events if isinstance(e, ToolFinished)]
+    assert len(finished) == 1
+    assert finished[0].result.is_error
+    assert "unknown tool" in finished[0].result.output
+
+
+def test_loop_brokers_multiple_parallel_tool_calls():
+    """One assistant turn with two tool calls brokers both, aggregates results."""
+    manifest = echo_manifest()
+    provider = ScriptedProvider(
+        [
+            AssistantTurn(
+                text=None,
+                tool_calls=[
+                    ToolCall("call-1", "echo", {"message": "first"}),
+                    ToolCall("call-2", "echo", {"message": "second"}),
+                ],
+                raw={"role": "assistant"},
+                stop_reason="tool_calls",
+            ),
+            AssistantTurn(
+                text="Both tools ran.",
+                tool_calls=[],
+                raw={"role": "assistant"},
+                stop_reason="end",
+            ),
+        ]
+    )
+    loop = AgentLoop(
+        provider,
+        Broker(manifest, cast(JailBuilder, LocalJail()), PolicyEngine()),
+        manifest,
+        "system",
+    )
+
+    messages = [{"role": "user", "content": "run both"}]
+    events = asyncio.run(_drain(loop, messages))
+
+    assert _text(events) == "Both tools ran."
+    finished = [e for e in events if isinstance(e, ToolFinished)]
+    assert len(finished) == 2
+    results = {f.call.id: f.result.output for f in finished}
+    assert results["call-1"] == "first"
+    assert results["call-2"] == "second"
+    assert len(provider.received_results) == 2

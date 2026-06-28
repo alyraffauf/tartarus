@@ -1,5 +1,7 @@
 import asyncio
 
+from typing import Any
+
 import pytest
 
 from tartarus.models import TextDelta, ToolResult, TurnComplete
@@ -7,13 +9,69 @@ from tartarus.provider.openai_compat import OpenAICompatProvider, ProviderError
 from tests.manifest_fixtures import echo_manifest
 
 
-def _provider():
-    return OpenAICompatProvider(
+def _provider(**overrides: Any):
+    kwargs: dict[str, Any] = dict(
         base_url="https://example.test/v1",
         api_key="secret",
         model="opencode/gpt-5.5",
         max_tokens=128,
     )
+    kwargs.update(overrides)
+    return OpenAICompatProvider(**kwargs)
+
+
+# -- shared fake HTTP stack ---------------------------------------------------
+
+
+class _FakeTransport:
+    """Replay supplied SSE lines as a streaming response."""
+
+    def __init__(self, lines: list[str], status_code: int = 200):
+        self._lines = lines
+        self.status_code = status_code
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+    async def aread(self):
+        return b"error body"
+
+
+_stored_stream: _FakeTransport = _FakeTransport([])
+
+
+class _FakeClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def stream(self, *args, **kwargs):
+        return _make_stream(_stored_stream)
+
+
+def _make_stream(transport):
+    class _Stream:
+        def __init__(self):
+            pass
+
+        async def __aenter__(self):
+            return transport
+
+        async def __aexit__(self, *exc):
+            return False
+
+    return _Stream()
+
+
+def _configure_fake_stream(lines, status_code=200):
+    global _stored_stream
+    _stored_stream = _FakeTransport(lines, status_code)
 
 
 def test_adapt_tools_wraps_in_function_envelope():
@@ -25,13 +83,7 @@ def test_adapt_tools_wraps_in_function_envelope():
 
 
 def test_build_body_includes_sampling_when_set():
-    provider = OpenAICompatProvider(
-        base_url="https://example.test/v1",
-        api_key="secret",
-        model="opencode/gpt-5.5",
-        max_tokens=128,
-        sampling={"temperature": 0, "top_p": 0.9},
-    )
+    provider = _provider(sampling={"temperature": 0, "top_p": 0.9})
 
     body = provider._build_body("sys", [], [])
 
@@ -47,11 +99,7 @@ def test_build_body_omits_sampling_when_unset():
 
 
 def test_build_body_sampling_cannot_override_reserved_fields():
-    provider = OpenAICompatProvider(
-        base_url="https://example.test/v1",
-        api_key="secret",
-        model="opencode/gpt-5.5",
-        max_tokens=128,
+    provider = _provider(
         sampling={"model": "other", "max_tokens": 999, "messages": []},
     )
 
@@ -212,37 +260,8 @@ def test_stream_yields_text_deltas_then_turn_complete(monkeypatch):
         "data: [DONE]",
     ]
 
-    class FakeResponse:
-        status_code = 200
-
-        async def aiter_lines(self):
-            for line in chunks:
-                yield line
-
-        async def aread(self):  # pragma: no cover - only used on error paths
-            return b""
-
-    class FakeStream:
-        async def __aenter__(self):
-            return FakeResponse()
-
-        async def __aexit__(self, *exc):
-            return False
-
-    class FakeClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
-
-        def stream(self, *args, **kwargs):
-            return FakeStream()
-
-    monkeypatch.setattr("tartarus.provider.openai_compat.httpx.AsyncClient", FakeClient)
+    _configure_fake_stream(chunks)
+    monkeypatch.setattr("tartarus.provider.openai_compat.httpx.AsyncClient", _FakeClient)
 
     async def collect():
         return [e async for e in provider.stream("sys", [], [])]
@@ -266,23 +285,79 @@ def test_stream_raises_on_bad_sse_chunk(monkeypatch, bad_line, expected_msg):
     """Invalid JSON or non-object SSE payloads abort the stream with ProviderError."""
     provider = _provider()
 
-    class FakeResponse:
+    _configure_fake_stream([bad_line])
+    monkeypatch.setattr("tartarus.provider.openai_compat.httpx.AsyncClient", _FakeClient)
+
+    async def collect():
+        return [e async for e in provider.stream("sys", [], [])]
+
+    with pytest.raises(ProviderError, match=expected_msg):
+        asyncio.run(collect())
+
+
+def test_stream_raises_on_http_error(monkeypatch):
+    """A non-200 response body aborts the stream with ProviderError."""
+    provider = _provider()
+
+    _configure_fake_stream([], status_code=500)
+    monkeypatch.setattr("tartarus.provider.openai_compat.httpx.AsyncClient", _FakeClient)
+
+    async def collect():
+        return [e async for e in provider.stream("sys", [], [])]
+
+    with pytest.raises(ProviderError, match="backend returned HTTP 500"):
+        asyncio.run(collect())
+
+
+def test_stream_passes_tool_call_deltas(monkeypatch):
+    """SSE chunks with tool_calls deltas are accumulated into the final turn."""
+    provider = _provider()
+
+    chunks = [
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"echo"}}]}}]}',  # noqa: E501
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"mess"}}]}}]}',  # noqa: E501
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"age\\": \\"hi\\"}"}}]}}]}',  # noqa: E501
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+        "data: [DONE]",
+    ]
+
+    _configure_fake_stream(chunks)
+    monkeypatch.setattr("tartarus.provider.openai_compat.httpx.AsyncClient", _FakeClient)
+
+    async def collect():
+        return [e async for e in provider.stream("sys", [], [])]
+
+    events = asyncio.run(collect())
+
+    assert isinstance(events[-1], TurnComplete)
+    turn = events[-1].turn
+    assert turn.stop_reason == "tool_calls"
+    assert len(turn.tool_calls) == 1
+    assert turn.tool_calls[0].name == "echo"
+    assert turn.tool_calls[0].arguments == {"message": "hi"}
+
+
+def test_complete_round_trips(monkeypatch):
+    """The non-streaming complete() method parses a response into an AssistantTurn."""
+    provider = _provider()
+
+    response_json = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"content": "Hello, world"},
+            }
+        ]
+    }
+
+    class _FakePostResponse:
         status_code = 200
+        text = "ok"
 
-        async def aiter_lines(self):
-            yield bad_line
+        def json(self):
+            return response_json
 
-        async def aread(self):  # pragma: no cover - only used on error paths
-            return b""
-
-    class FakeStream:
-        async def __aenter__(self):
-            return FakeResponse()
-
-        async def __aexit__(self, *exc):
-            return False
-
-    class FakeClient:
+    class _FakePostClient:
         def __init__(self, *args, **kwargs):
             pass
 
@@ -292,13 +367,14 @@ def test_stream_raises_on_bad_sse_chunk(monkeypatch, bad_line, expected_msg):
         async def __aexit__(self, *exc):
             return False
 
-        def stream(self, *args, **kwargs):
-            return FakeStream()
+        async def post(self, *args, **kwargs):
+            return _FakePostResponse()
 
-    monkeypatch.setattr("tartarus.provider.openai_compat.httpx.AsyncClient", FakeClient)
+    monkeypatch.setattr(
+        "tartarus.provider.openai_compat.httpx.AsyncClient", _FakePostClient
+    )
 
-    async def collect():
-        return [e async for e in provider.stream("sys", [], [])]
-
-    with pytest.raises(ProviderError, match=expected_msg):
-        asyncio.run(collect())
+    turn = asyncio.run(provider.complete("sys", [], []))
+    assert turn.text == "Hello, world"
+    assert turn.stop_reason == "end"
+    assert turn.tool_calls == []

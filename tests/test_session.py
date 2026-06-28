@@ -130,3 +130,18 @@ def test_first_user_message_preview(tmp_path):
     assert (
         SessionStore(str(tmp_path), "s1").first_user_message() == "summarize the repo"
     )
+
+
+def test_first_user_message_returns_none_for_assistant_only(tmp_path):
+    store = SessionStore(str(tmp_path), "s1")
+    store.append([{"role": "assistant", "content": "hello"}])
+
+    assert SessionStore(str(tmp_path), "s1").first_user_message() is None
+
+
+def test_list_ids_ignores_non_jsonl_files(tmp_path):
+    for name in ("a.jsonl", "b.txt", "c.log"):
+        (tmp_path / name).write_text("{}")
+
+    ids = SessionStore.list_ids(str(tmp_path))
+    assert ids == ["a"]

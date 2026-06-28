@@ -153,8 +153,10 @@ def test_nonzero_exit_is_reported_as_error():
 
 
 def test_undeclared_timeout_runs_unbounded():
-    # A capability without a declared timeout runs with no ceiling: the jail
-    # receives None, which the process wait loop treats as "wait forever".
+    # A capability without a declared timeout has capability.timeout = None.
+    # The broker passes this explicitly to the jail, which overrides the jail's
+    # own default (30s). asyncio.timeout(None) waits indefinitely, so the
+    # command runs with no ceiling until the process exits.
     jail = FakeJail(result=ExecResult(0, "hi", ""))
     broker = _broker(jail)
 
@@ -518,3 +520,41 @@ def test_shell_injection_is_escaped_before_it_reaches_the_jail():
 
     # The payload is quoted into a single argument; the injected command can't run.
     assert jail.exec_commands == ["echo 'hi; echo pwned'"]
+
+
+def test_validate_args_enforces_boolean_and_array_types():
+    params = {
+        "verbose": Param(type="boolean", description=""),
+        "items": Param(type="array", description=""),
+    }
+
+    assert validate_args({"verbose": True, "items": [1, 2]}, params) is None
+
+    error = validate_args({"verbose": "yes", "items": [1]}, params)
+    assert error is not None
+    assert "must be a boolean" in error
+
+    error = validate_args({"verbose": True, "items": "not-a-list"}, params)
+    assert error is not None
+    assert "must be a array" in error
+
+    error = validate_args({"verbose": True, "items": True}, params)
+    assert error is not None
+    assert "must be a array" in error
+
+
+def test_background_jail_error_is_reported():
+    jail = FakeJail(error=JailError("popen failed"))
+    broker = Broker(
+        _background_manifest(),
+        jail,
+        PolicyEngine(prompt=lambda *_: True),
+        registry=FakeRegistry(),
+    )
+
+    result = _handle(broker, _call("run_bg", {"command": "sleep 1"}))
+
+    assert result.is_error
+    assert "jail error" in result.output
+    # The command was interpolated and attempted; the jail error surface proves
+    # the broker catches and reports failures from exec_background properly.

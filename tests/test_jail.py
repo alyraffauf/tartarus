@@ -10,8 +10,6 @@ import shutil
 import shlex
 import subprocess
 import sys
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import tartarus.jail
 import pytest
@@ -19,6 +17,7 @@ import pytest
 from tartarus.shell import ShellError, resolve_minimal_shell_path
 from tartarus.jail import JailBuilder, JailError
 from tartarus.manifest import Grant
+from tests.helpers import HttpServer
 
 _NEEDS_SANDBOX = pytest.mark.skipif(
     shutil.which("bwrap") is None or shutil.which("nix") is None,
@@ -178,7 +177,7 @@ def test_proxy_jail_sets_proxy_environment(tmp_path):
 def test_proxy_jail_routes_curl_through_allowed_host(
     tmp_path, shell_path, shell_closure
 ):
-    with _HttpServer() as upstream:
+    with HttpServer() as upstream:
         upstream_host, upstream_port = upstream.server_address
         curl_bins = _curl_bin_dirs()
         jail = JailBuilder(
@@ -205,7 +204,7 @@ def test_proxy_jail_routes_curl_through_allowed_host(
 
 @_NEEDS_SANDBOX
 def test_proxy_jail_blocks_unlisted_host(tmp_path, shell_path, shell_closure):
-    with _HttpServer() as upstream:
+    with HttpServer() as upstream:
         upstream_host, upstream_port = upstream.server_address
         curl_bins = _curl_bin_dirs()
         jail = JailBuilder(
@@ -383,38 +382,6 @@ def test_exec_cancellation_terminates_unrestricted_process(tmp_path):
 
     # The process was killed during its sleep, so its later output never arrives.
     assert lines == ["started\n"]
-
-
-class _HelloHandler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.0"
-
-    def do_GET(self):
-        body = b"hello"
-        self.send_response(200)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, format: str, *args) -> None:
-        pass
-
-
-class _HttpServer:
-    def __enter__(self):
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _HelloHandler)
-        self._thread = threading.Thread(
-            target=self._server.serve_forever,
-            name="tartarus-nix-jail-test-http-server",
-            daemon=True,
-        )
-        self._thread.start()
-        return self._server
-
-    def __exit__(self, *_args):
-        self._server.shutdown()
-        self._server.server_close()
-        self._thread.join(timeout=5)
 
 
 def _curl_bin_dirs() -> list[str]:

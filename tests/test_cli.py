@@ -5,6 +5,7 @@ import pytest
 
 from tartarus.agent_loop import AgentLoop
 from tartarus.background import BackgroundRegistry
+from tartarus.broker import Broker
 from tartarus.cli import (
     SessionFlags,
     _bundle_manifest_source,
@@ -13,6 +14,10 @@ from tartarus.cli import (
     _run_one_shot,
 )
 from tartarus.config import ConfigError
+from tartarus.jail import JailBuilder
+from tartarus.policy import PolicyEngine
+from tartarus.provider.base import Provider
+from tests.manifest_fixtures import echo_manifest
 
 
 def test_parse_agent_selector_picks_named_agent():
@@ -138,9 +143,16 @@ def test_run_one_shot_returns_one_when_background_reaction_fails(monkeypatch):
     monkeypatch.setattr("tartarus.cli._send", fake_send)
     monkeypatch.setattr("tartarus.cli._drain_notice", fake_drain)
 
+    loop = AgentLoop(
+        provider=cast(Provider, None),
+        broker=Broker(echo_manifest(), cast(JailBuilder, None), PolicyEngine()),
+        manifest=echo_manifest(),
+        system_prompt="test",
+    )
+
     result = asyncio.run(
         _run_one_shot(
-            cast(AgentLoop, None),
+            loop,
             "prompt",
             [],
             None,

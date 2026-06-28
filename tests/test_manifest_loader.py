@@ -128,27 +128,22 @@ def test_non_store_ca_bundle_is_rejected():
         build_manifest_from_raw(raw)
 
 
-def test_missing_shell_closure_is_rejected():
+@pytest.mark.parametrize(
+    ("modification", "expected_match"),
+    [
+        (None, "shellClosure.*required"),
+        ("/tmp/store-paths", "shellClosure.*under /nix/store"),
+        ("/nix/store/shell-closure/paths", "shellClosure.*store-paths"),
+    ],
+)
+def test_shell_closure_validation(modification, expected_match):
     raw = _valid_raw()
-    del raw["shellClosure"]
+    if modification is None:
+        del raw["shellClosure"]
+    else:
+        raw["shellClosure"] = modification
 
-    with pytest.raises(ManifestError, match="shellClosure.*required"):
-        build_manifest_from_raw(raw)
-
-
-def test_non_store_shell_closure_is_rejected():
-    raw = _valid_raw()
-    raw["shellClosure"] = "/tmp/store-paths"
-
-    with pytest.raises(ManifestError, match="shellClosure.*under /nix/store"):
-        build_manifest_from_raw(raw)
-
-
-def test_shell_closure_without_store_paths_suffix_is_rejected():
-    raw = _valid_raw()
-    raw["shellClosure"] = "/nix/store/shell-closure/paths"
-
-    with pytest.raises(ManifestError, match="shellClosure.*store-paths"):
+    with pytest.raises(ManifestError, match=expected_match):
         build_manifest_from_raw(raw)
 
 
@@ -339,43 +334,24 @@ def test_non_string_capability_description_is_rejected():
         build_manifest_from_raw(raw)
 
 
-def test_non_object_params_is_rejected():
+@pytest.mark.parametrize(
+    ("field_path", "bad_value", "expected_match"),
+    [
+        (("echo", "params"), "bad", "params.*object"),
+        (("echo", "params", "message"), "bad", "params.message"),
+        (("echo", "params", "message", "required"), "yes", "required.*valid boolean"),
+        (("echo", "params", "message", "description"), ["bad"], "description.*valid string"),
+        (("echo", "params", "message", "enum"), "red", "enum.*valid list"),
+    ],
+)
+def test_param_shape_validation(field_path, bad_value, expected_match):
     raw = _valid_raw()
-    raw["capabilities"]["echo"]["params"] = "bad"
+    target = raw["capabilities"]
+    for key in field_path[:-1]:
+        target = target[key]
+    target[field_path[-1]] = bad_value
 
-    with pytest.raises(ManifestError, match="params.*object"):
-        build_manifest_from_raw(raw)
-
-
-def test_non_object_param_body_is_rejected():
-    raw = _valid_raw()
-    raw["capabilities"]["echo"]["params"]["message"] = "bad"
-
-    with pytest.raises(ManifestError, match="params.message"):
-        build_manifest_from_raw(raw)
-
-
-def test_non_boolean_param_required_is_rejected():
-    raw = _valid_raw()
-    raw["capabilities"]["echo"]["params"]["message"]["required"] = "yes"
-
-    with pytest.raises(ManifestError, match="required.*valid boolean"):
-        build_manifest_from_raw(raw)
-
-
-def test_non_string_param_description_is_rejected():
-    raw = _valid_raw()
-    raw["capabilities"]["echo"]["params"]["message"]["description"] = ["bad"]
-
-    with pytest.raises(ManifestError, match="description.*valid string"):
-        build_manifest_from_raw(raw)
-
-
-def test_non_list_param_enum_is_rejected():
-    raw = _valid_raw()
-    raw["capabilities"]["echo"]["params"]["message"]["enum"] = "red"
-
-    with pytest.raises(ManifestError, match="enum.*valid list"):
+    with pytest.raises(ManifestError, match=expected_match):
         build_manifest_from_raw(raw)
 
 
