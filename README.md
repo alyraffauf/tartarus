@@ -53,9 +53,11 @@ returns to the prompt without corrupting the transcript.
 - Append-only audit logs and resumable session transcripts under `.tartarus/`.
 
 The shipped `default` agent includes read/search tools, Git inspection tools,
-JSON helpers, scoped file editing, formatting/test commands, sealed shell
-commands, package-scoped ephemeral commands, artifact writing, and a few
-networked fetch examples.
+`jq`, scoped file editing, formatting/test commands, sealed shell commands,
+background commands, artifact writing, and scoped network examples for PyPI,
+RFCs, and approved general web fetches. Formatting (`format_nix`) rewrites
+files so it is gated with `ask-once`: approve once per session, then nixfmt
+runs freely.
 
 ## Running Agents
 
@@ -101,7 +103,8 @@ come from the environment.
 ## Defining An Agent
 
 Agents are ordinary Nix values. The reusable compiler lives in `lib/agents.nix`;
-the example agent is in `agent.nix`.
+the shared coding-agent tool catalog lives in `agentModules`, and the example
+agent is in `agent.nix`.
 
 ```nix
 {
@@ -129,7 +132,17 @@ the example agent is in `agent.nix`.
         default = {
           systemPrompt = "You are a careful coding agent.";
           shell = with pkgs; [ bash coreutils ];
-          capabilities = [ read_package_json ];
+          capabilities = with tartarus.agentModules; [
+            read
+            write
+            edit
+            list
+            glob
+            grep
+            bash
+            web_fetch
+            read_package_json
+          ];
 
           model = {
             provider = "openai-compat";
@@ -157,6 +170,12 @@ A capability declares:
 
 The baseline `shell` is shared by every jailed call, so keep it small. Put
 tool-specific programs in that capability's package grants.
+
+`tartarus.agentModules` provides reusable module definitions for common
+coding-agent tools: `read`, `list`, `write`, `edit`, `glob`, `grep`, `bash`,
+and `web_fetch`. These are also the tool names exposed to the agent.
+Task/subagent orchestration, todo state, human questions, and skill loading are
+intentionally not modeled as shell capabilities yet.
 
 ## Configuration
 

@@ -38,9 +38,11 @@
 
       # The reusable compiler from real Nix capabilities to agent bundles.
       agentsLib = import ./lib/agents.nix { inherit lib; };
+      agentModules = import ./agent-modules { inherit lib; };
     in
     {
       lib = agentsLib;
+      inherit agentModules;
 
       # `.#agents.<system>.<name>.bundle` is the shareable runtime boundary the
       # Python harness consumes. We ship one agent named `default`; the lib
@@ -52,7 +54,95 @@
           pkgs = pkgsFor system;
           packages = { }; # optional: add this flake's own derivations when capabilities need them
         in
-        agentsLib.mkAgents { inherit pkgs packages; } (import ./agent.nix { inherit pkgs; })
+        agentsLib.mkAgents { inherit pkgs packages; } (import ./agent.nix { inherit pkgs agentModules; })
+      );
+
+      checks = eachSystem (
+        system:
+        let
+          pkgs = pkgsFor system;
+          packages = { };
+          moduleNames = [
+            "bash"
+            "read"
+            "write"
+            "edit"
+            "glob"
+            "list"
+            "grep"
+            "web_fetch"
+          ];
+          resolvedCatalog = agentsLib.resolveCapabilities { inherit pkgs packages; } (
+            map (moduleName: agentModules.${moduleName}) moduleNames
+          );
+          defaultManifest =
+            (agentsLib.mkAgents { inherit pkgs packages; } (import ./agent.nix { inherit pkgs agentModules; }))
+            .default.manifest;
+          catalogCapabilityNames = lib.attrNames resolvedCatalog;
+          expectedCapabilityNames = [
+            "bash"
+            "edit"
+            "glob"
+            "grep"
+            "list"
+            "read"
+            "web_fetch"
+            "write"
+          ];
+          globCapability = defaultManifest.capabilities.glob;
+          defaultToolNames = map (tool: tool.name) defaultManifest.tools;
+          # Keep in sync with the same list in tests/test_bundle.py
+          # (test_default_flake_bundle_loads_and_is_self_contained).
+          expectedDefaultTools = [
+            "background_bash"
+            "bash"
+            "bg_output"
+            "bg_status"
+            "bg_stop"
+            "edit"
+            "fetch_rfc"
+            "format_nix"
+            "git_diff"
+            "git_log"
+            "git_show"
+            "git_status"
+            "glob"
+            "grep"
+            "jq"
+            "list"
+            "pypi_versions"
+            "pytest"
+            "read"
+            "web_fetch"
+            "write"
+            "write_artifact"
+          ];
+          checksPassed =
+            lib.assertMsg (
+              (builtins.sort builtins.lessThan catalogCapabilityNames)
+              == (builtins.sort builtins.lessThan expectedCapabilityNames)
+            ) "agentModules must resolve to the expected capability names"
+            && lib.assertMsg (
+              (builtins.sort builtins.lessThan defaultToolNames)
+              == (builtins.sort builtins.lessThan expectedDefaultTools)
+            ) "default agent must expose the curated practical tool set"
+            && lib.assertMsg (defaultManifest.capabilities ? glob) "default agent must expose glob"
+            && lib.assertMsg (
+              globCapability.policy == "auto"
+              && globCapability.grants.writable == [ ]
+              && globCapability.grants.network.allowedHosts == [ ]
+              && globCapability.grants.packageBins != [ ]
+            ) "glob must stay read-only and carry a package grant"
+            && lib.assertMsg (
+              defaultManifest.capabilities.shell_escape.grants.unrestricted
+              && !(builtins.elem "shell_escape" defaultToolNames)
+            ) "shell_escape must stay denied and absent from tools";
+        in
+        {
+          agent-modules = pkgs.runCommand "tartarus-agent-modules-check" { } ''
+            ${lib.optionalString checksPassed "touch $out"}
+          '';
+        }
       );
 
       # The packaged harness (uv2nix virtualenv). `nix build .#tartarus` /
@@ -76,7 +166,9 @@
       # bundle. ruff and ty are supplied by `uv`, not this shell.
       devShells = eachSystem (
         system:
-        let pkgs = pkgsFor system; in
+        let
+          pkgs = pkgsFor system;
+        in
         {
           default = pkgs.mkShellNoCC {
             packages = with pkgs; [

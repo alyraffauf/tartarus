@@ -65,7 +65,7 @@ def test_ask_always_decline_is_denied():
 def test_ask_once_remembers_within_session():
     prompt, calls = _always_yes()
     engine = PolicyEngine(prompt=prompt)
-    capability = _capability("ask-once", name="write_file")
+    capability = _capability("ask-once", name="write")
 
     first = engine.decide(capability, {}, "true")
     second = engine.decide(capability, {}, "true")
@@ -83,7 +83,7 @@ def test_ask_once_decline_is_not_remembered():
         return False
 
     engine = PolicyEngine(prompt=prompt)
-    capability = _capability("ask-once", name="write_file")
+    capability = _capability("ask-once", name="write")
 
     engine.decide(capability, {}, "true")
     engine.decide(capability, {}, "true")

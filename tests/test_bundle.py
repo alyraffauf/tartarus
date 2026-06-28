@@ -189,19 +189,72 @@ def test_default_flake_bundle_loads_and_is_self_contained():
     config = Config(flake_ref=f"path:{REPO_ROOT}")
     bundle_path = resolve_bundle(config)
     manifest = load_bundle(bundle_path)
+    tool_names = {tool["name"] for tool in manifest.tools}
 
     # The contract survives the round-trip through the bundle.
+    # Keep in sync with expectedDefaultTools in flake.nix (checks.agent-modules).
+    assert tool_names == {
+        "background_bash",
+        "bash",
+        "bg_output",
+        "bg_status",
+        "bg_stop",
+        "edit",
+        "fetch_rfc",
+        "format_nix",
+        "git_diff",
+        "git_log",
+        "git_show",
+        "git_status",
+        "glob",
+        "grep",
+        "jq",
+        "list",
+        "pypi_versions",
+        "pytest",
+        "read",
+        "web_fetch",
+        "write",
+        "write_artifact",
+    }
+    assert {
+        "count_lines",
+        "fetch_dependency",
+        "fetch_wikipedia",
+        "format_code",
+        "list_dir",
+        "query_json",
+        "read_json",
+        "run_background_command",
+        "run_ephemeral_command",
+        "run_migration",
+        "run_tests",
+        "shell_escape",
+    }.isdisjoint(tool_names)
     assert manifest.capabilities["git_status"].policy == "auto"
     assert "--end-of-options" in manifest.capabilities["git_show"].runner
     assert (
         "artifact path must stay under artifacts"
         in manifest.capabilities["write_artifact"].runner
     )
+    assert manifest.capabilities["glob"].policy == "auto"
+    assert manifest.capabilities["glob"].grants.writable == []
+    assert manifest.capabilities["glob"].grants.allowed_hosts == []
+    assert any(
+        "glob-files" in package_bin
+        for package_bin in manifest.capabilities["glob"].grants.package_bins
+    )
     assert any(
         "git" in package_bin
         for package_bin in manifest.capabilities["git_status"].grants.package_bins
     )
+    assert manifest.capabilities["fetch_rfc"].grants.allowed_hosts == [
+        "www.rfc-editor.org:443"
+    ]
+    assert manifest.capabilities["format_nix"].policy == "ask-once"
+    assert manifest.capabilities["format_nix"].grants.writable == ["."]
     assert manifest.capabilities["shell_escape"].grants.unrestricted is True
+    assert "shell_escape" not in tool_names
     assert manifest.system_prompt and "Tartarus" in manifest.system_prompt
     # PATH is baked and every entry is a store bin dir.
     assert manifest.shell_path

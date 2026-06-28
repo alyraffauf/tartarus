@@ -1,12 +1,11 @@
 # The example agent. One agent named `default`, whose `capabilities` is a plain
 # list of capability specs and capability modules. Each spec self-identifies via
-# `name`; the lib keys them by it. `count_lines` and `edit_file` are written as
-# modules — functions of `{ pkgs, packages, ... }` — so they can be lifted out and
-# shared across flakes. The rest are plain attrsets because `pkgs` is already in
-# scope here. The lib accepts both forms. To add a second agent, add another named
+# `name`; the lib keys them by it. Common coding-agent tools come from
+# `agentModules`; showcase-specific tools stay inline. The lib accepts both
+# plain attrsets and module functions. To add a second agent, add another named
 # entry alongside `default`.
 
-{ pkgs }:
+{ pkgs, agentModules }:
 
 {
   default = {
@@ -63,177 +62,15 @@
     '';
 
     capabilities = [
-      # A self-contained module: it defines its own helper derivation from the
-      # passed-in `pkgs`, so the whole capability can be copied into another flake.
-      (
-        { pkgs, ... }:
-        let
-          count-lines = pkgs.writeShellApplication {
-            name = "count-lines";
-            runtimeInputs = [
-              pkgs.coreutils
-              pkgs.findutils
-            ];
-            text = ''
-              target="''${1:-.}"
-              if [ -d "$target" ]; then
-                find "$target" -type f \
-                  -not -path './.git/*' \
-                  -not -path './.tartarus/*' \
-                  -not -path './.direnv/*' \
-                  -print0 |
-                  xargs -0 wc -l |
-                  tail -n 1
-              else
-                wc -l < "$target"
-              fi
-            '';
-          };
-        in
-        {
-          name = "count_lines";
-          description = "Count source lines with a tiny package exported by this flake.";
-          policy = "auto";
-          params.path = {
-            type = "string";
-            description = "File or directory to count, relative to the work tree. Defaults to '.'.";
-            required = false;
-            enum = null;
-          };
-          grants = {
-            packages = [
-              pkgs.bash
-              count-lines
-            ];
-            network.allowedHosts = [ ];
-            writable = [ ];
-            unrestricted = false;
-          };
-          runner = "bash -c 'path=$1; if [ -z \"$path\" ]; then count-lines; else count-lines \"$path\"; fi' _ {path}";
-        }
-      )
-
       # Read-only work-tree introspection. These run automatically because they
-      # only read /work and have no network, writable path, or package grants.
-      {
-        name = "read_file";
-        description = "Read a file in the work tree, optionally limited by line range.";
-        policy = "auto";
-        params = {
-          path = {
-            type = "string";
-            description = "Path to read, relative to the work tree.";
-            required = true;
-            enum = null;
-          };
-          start_line = {
-            type = "integer";
-            description = "First line to read, 1-based. Defaults to 1.";
-            required = false;
-            enum = null;
-          };
-          end_line = {
-            type = "integer";
-            description = "Last line to read, inclusive. Defaults to the end of the file.";
-            required = false;
-            enum = null;
-          };
-        };
-        grants = {
-          packages = [
-            pkgs.bash
-            pkgs.gnused
-          ];
-          network.allowedHosts = [ ];
-          writable = [ ];
-          unrestricted = false;
-        };
-        runner = ''
-          bash -c 'start=$1; end=$2; if [ -z "$start" ]; then start=1; fi; range="$start,\$"; if [ -n "$end" ]; then range="$start,$end"; fi; sed -n "$range"p "$3"' _ {start_line} {end_line} {path}
-        '';
-      }
+      # only read /work and have no network or writable grants.
+      agentModules.read
+      agentModules.glob
+      agentModules.list
+      agentModules.grep
 
       {
-        name = "list_dir";
-        description = "List a directory in the work tree.";
-        policy = "auto";
-        params.path = {
-          type = "string";
-          description = "Directory to list, relative to the work tree. Defaults to '.'.";
-          required = false;
-          enum = null;
-        };
-        grants = {
-          packages = [
-            pkgs.bash
-            pkgs.coreutils
-          ];
-          network.allowedHosts = [ ];
-          writable = [ ];
-          unrestricted = false;
-        };
-        runner = "bash -c 'path=$1; if [ -z \"$path\" ]; then path=.; fi; ls -la \"$path\"' _ {path}";
-      }
-
-      {
-        name = "search";
-        description = "Search file contents in the work tree with ripgrep.";
-        policy = "auto";
-        params = {
-          pattern = {
-            type = "string";
-            description = "Regex pattern to search for.";
-            required = true;
-            enum = null;
-          };
-          path = {
-            type = "string";
-            description = "Path to search, relative to the work tree. Defaults to '.'.";
-            required = false;
-            enum = null;
-          };
-          glob = {
-            type = "string";
-            description = "Optional ripgrep glob filter.";
-            required = false;
-            enum = null;
-          };
-        };
-        grants = {
-          packages = [
-            pkgs.bash
-            pkgs.ripgrep
-          ];
-          network.allowedHosts = [ ];
-          writable = [ ];
-          unrestricted = false;
-        };
-        runner = ''
-          bash -c 'target=$2; if [ -z "$target" ]; then target=.; fi; if [ -n "$3" ]; then rg --glob "$3" "$1" "$target"; else rg "$1" "$target"; fi' _ {pattern} {path} {glob}
-        '';
-      }
-
-      {
-        name = "read_json";
-        description = "Read and validate a JSON file in the work tree, printing formatted JSON.";
-        policy = "auto";
-        params.path = {
-          type = "string";
-          description = "JSON file to read, relative to the work tree.";
-          required = true;
-          enum = null;
-        };
-        grants = {
-          packages = [ pkgs.python3 ];
-          network.allowedHosts = [ ];
-          writable = [ ];
-          unrestricted = false;
-        };
-        runner = "python3 -m json.tool {path}";
-      }
-
-      {
-        name = "query_json";
+        name = "jq";
         description = "Run a jq query against a JSON file in the work tree.";
         policy = "auto";
         params = {
@@ -358,152 +195,19 @@
 
       # Work-tree mutation. These are ask-once so routine edit loops stay
       # ergonomic while the human still approves write access per session.
-      {
-        name = "write_file";
-        description = "Create or overwrite a file in the work tree.";
-        policy = "ask-once";
-        params = {
-          path = {
-            type = "string";
-            description = "Path to write, relative to the work tree.";
-            required = true;
-            enum = null;
-          };
-          content = {
-            type = "string";
-            description = "Complete file content.";
-            required = true;
-            enum = null;
-          };
-        };
-        grants = {
-          packages = [
-            pkgs.bash
-            pkgs.coreutils
-          ];
-          network.allowedHosts = [ ];
-          writable = [ "." ];
-          unrestricted = false;
-        };
-        runner = ''
-          bash -c 'mkdir -p "$(dirname "$1")"; printf %s "$2" > "$1"' _ {path} {content}
-        '';
-      }
-
-      # Like count_lines, this capability defines its own helper derivation so the
-      # edit logic lives in a readable, testable script rather than a shell
-      # one-liner, while staying self-contained for copying into another flake.
-      (
-        { pkgs, ... }:
-        let
-          edit-file = pkgs.writers.writePython3Bin "edit-file" { flakeIgnore = [ "E501" ]; } ''
-            import pathlib
-            import sys
-
-            path = pathlib.Path(sys.argv[1])
-            old_text = sys.argv[2]
-            new_text = sys.argv[3]
-            replace_all = sys.argv[4] == "True"
-
-            text = path.read_text()
-            count = text.count(old_text)
-
-            if count == 0:
-                sys.exit("no occurrence of old_str found")
-
-            # Require an unambiguous target unless the caller opts into a sweep.
-            # Reporting each match's line lets the model widen old_str instead of
-            # falling back to a whole-file write_file.
-            if not replace_all and count != 1:
-                lines = [
-                    text.count("\n", 0, i) + 1
-                    for i in range(len(text))
-                    if text.startswith(old_text, i)
-                ]
-                locations = ", ".join(str(line) for line in lines)
-                sys.exit(
-                    f"expected exactly one match, found {count} at lines "
-                    f"{locations}; add surrounding context or set replace_all"
-                )
-
-            replacements = count if replace_all else 1
-            path.write_text(text.replace(old_text, new_text, replacements))
-            print(f"replaced {replacements} occurrence(s) in {path}")
-          '';
-        in
-        {
-          name = "edit_file";
-          description = "Replace an exact string in a work-tree file. Defaults to requiring a single match; set replace_all to substitute every occurrence. Reports how many occurrences were replaced.";
-          policy = "ask-once";
-          params = {
-            path = {
-              type = "string";
-              description = "Path to edit, relative to the work tree.";
-              required = true;
-              enum = null;
-            };
-            old_str = {
-              type = "string";
-              description = "Exact text to replace. Unless replace_all is set, it must appear exactly once.";
-              required = true;
-              enum = null;
-            };
-            new_str = {
-              type = "string";
-              description = "Replacement text.";
-              required = true;
-              enum = null;
-            };
-            replace_all = {
-              type = "boolean";
-              description = "Replace every occurrence instead of requiring exactly one. Defaults to false.";
-              required = false;
-              enum = null;
-            };
-          };
-          grants = {
-            packages = [ edit-file ];
-            network.allowedHosts = [ ];
-            writable = [ "." ];
-            unrestricted = false;
-          };
-          runner = "edit-file {path} {old_str} {new_str} {replace_all}";
-        }
-      )
+      agentModules.write
+      agentModules.edit
 
       # General command execution inside the shell. This is still jailed and
       # networkless, but arbitrary shell commands deserve per-call approval.
-      {
-        name = "run_command";
-        description = ''
-          Run a shell command using only tools available in the shell. The work
-          tree is writable and there is no network. Git is available for local
-          repository inspection. Each call requires approval.
-        '';
-        policy = "ask-always";
-        params.command = {
-          type = "string";
-          description = "The command line to run inside the jail.";
-          required = true;
-          enum = null;
-        };
-        grants = {
-          packages = [
-            pkgs.bash
-          ];
-          network.allowedHosts = [ ];
-          writable = [ "." ];
-          unrestricted = false;
-        };
-        runner = "bash -c {command}";
-      }
+      agentModules.bash
 
       # Long-running work that should not block the turn. `kind = "background"`
       # launches the command detached and returns a handle (such as bg-1)
       # immediately; the control capabilities below inspect and stop it, and a
       # completion notice is injected into the conversation when it exits.
       {
-        name = "run_background_command";
+        name = "background_bash";
         description = ''
           Start a shell command running in the background and return a task
           handle (such as bg-1) right away, without waiting for it to finish.
@@ -600,10 +304,13 @@
         runner = "";
       }
 
+      # Formats all .nix files in the work tree. It rewrites files, so it is
+      # gated with ask-once: the human approves write access once per session,
+      # then nixfmt runs freely inside the writable "." grant.
       {
-        name = "format_code";
+        name = "format_nix";
         description = "Format Nix files in the work tree with nixfmt.";
-        policy = "auto";
+        policy = "ask-once";
         params = { };
         grants = {
           packages = [
@@ -619,7 +326,7 @@
       }
 
       {
-        name = "run_tests";
+        name = "pytest";
         description = "Run the project test suite without network access.";
         policy = "ask-once";
         # Capabilities run unbounded by default; a full test run is the rare case
@@ -642,41 +349,6 @@
           unrestricted = false;
         };
         runner = "bash -c 'if [ -n \"$1\" ]; then pytest -k \"$1\"; else pytest; fi' _ {filter}";
-      }
-
-      # Per-call package expansion. The package bins are appended only for this
-      # invocation; they do not become part of the permanent shell.
-      {
-        name = "run_ephemeral_command";
-        description = "Run a shell command with allow-listed Nix package binaries available for this jailed call only.";
-        policy = "ask-always";
-        params = {
-          package = {
-            type = "string";
-            description = "Allow-listed package the command intends to use.";
-            required = true;
-            enum = [
-              "shellcheck"
-              "tree"
-            ];
-          };
-          command = {
-            type = "string";
-            description = "Command line to run with the ephemeral package set on PATH.";
-            required = true;
-            enum = null;
-          };
-        };
-        grants = {
-          packages = [
-            pkgs.shellcheck
-            pkgs.tree
-          ];
-          network.allowedHosts = [ ];
-          writable = [ ];
-          unrestricted = false;
-        };
-        runner = "bash -c {command}";
       }
 
       # Narrow artifact output. This demonstrates granting a specific writable
@@ -715,12 +387,12 @@
 
       # Scoped HTTP egress through the filtering proxy.
       {
-        name = "fetch_dependency";
-        description = "Query Python package metadata through the scoped HTTP proxy.";
+        name = "pypi_versions";
+        description = "Query Python package versions through the scoped HTTP proxy.";
         policy = "ask-once";
         params.package = {
           type = "string";
-          description = "Package requirement to fetch.";
+          description = "Python package name or requirement to inspect.";
           required = true;
           enum = null;
         };
@@ -728,7 +400,6 @@
           packages = [ pkgs.python3Packages.pip ];
           network.allowedHosts = [
             "pypi.org:443"
-            "files.pythonhosted.org:443"
           ];
           writable = [ ];
           unrestricted = false;
@@ -736,94 +407,28 @@
         runner = "pip --no-cache-dir index versions {package}";
       }
 
-      # Pre-approved fetch for Wikipedia. The host enum and network allow-list are
-      # the same boundary, so this can be auto without opening general web egress.
       {
-        name = "fetch_wikipedia";
-        description = "Fetch from Wikipedia through the scoped HTTP proxy.";
+        name = "fetch_rfc";
+        description = "Fetch a plain-text RFC from rfc-editor.org through the scoped HTTP proxy.";
         policy = "auto";
-        params = {
-          host = {
-            type = "string";
-            description = "Allow-listed host to fetch.";
-            required = true;
-            enum = [
-              "en.wikipedia.org"
-              "wikipedia.org"
-            ];
-          };
-          path = {
-            type = "string";
-            description = "URL path beginning with '/'.";
-            required = true;
-            enum = null;
-          };
-        };
-        grants = {
-          packages = [ pkgs.curl ];
-          network.allowedHosts = [
-            "en.wikipedia.org:443"
-            "wikipedia.org:443"
-          ];
-          writable = [ ];
-          unrestricted = false;
-        };
-        runner = "curl -fsSL https://{host}{path}";
-      }
-
-      # Wildcard HTTP egress is useful for research, but always prompt and
-      # audit the actual destination reported by the proxy.
-      {
-        name = "fetch_any_url";
-        description = "Fetch any HTTP(S) URL through the scoped HTTP proxy after per-call approval.";
-        policy = "ask-always";
-        params.url = {
-          type = "string";
-          description = "Full HTTP(S) URL to fetch.";
+        params.number = {
+          type = "integer";
+          description = "RFC number to fetch.";
           required = true;
           enum = null;
         };
         grants = {
           packages = [ pkgs.curl ];
-          # Security note: wildcard opens any HTTP(S) host through the proxy.
-          network.allowedHosts = [ "*" ];
+          network.allowedHosts = [ "www.rfc-editor.org:443" ];
           writable = [ ];
           unrestricted = false;
         };
-        runner = "curl -fsSL {url}";
+        runner = "curl -fsSL https://www.rfc-editor.org/rfc/rfc{number}.txt";
       }
 
-      # Plain TCP clients do not obey the HTTP proxy. Keep examples like this
-      # denied until a network namespace/firewall supervisor exists.
-      {
-        name = "run_migration";
-        description = "Disabled until plain TCP database egress has namespace-level routing.";
-        policy = "deny";
-        params = {
-          direction = {
-            type = "string";
-            description = "Migration direction.";
-            required = true;
-            enum = [
-              "up"
-              "down"
-            ];
-          };
-          steps = {
-            type = "integer";
-            description = "Number of migration steps.";
-            required = false;
-            enum = null;
-          };
-        };
-        grants = {
-          packages = [ pkgs.postgresql ];
-          network.allowedHosts = [ "localhost:5432" ];
-          writable = [ "migrations" ];
-          unrestricted = false;
-        };
-        runner = "psql -h localhost -p 5432 -f migrations/{direction}/latest.sql";
-      }
+      # Wildcard HTTP egress is useful for research, but always prompt and
+      # audit the actual destination reported by the proxy.
+      agentModules.web_fetch
 
       # The big red button. Trusted overlays may flip this to ask-always; the
       # manifest validator rejects unrestricted + auto.

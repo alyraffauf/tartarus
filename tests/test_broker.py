@@ -167,7 +167,7 @@ def test_undeclared_timeout_runs_unbounded():
 
 def test_declared_timeout_reaches_the_jail():
     capability = Capability(
-        name="run_tests",
+        name="pytest",
         description="run",
         policy="auto",
         params={},
@@ -176,9 +176,9 @@ def test_declared_timeout_reaches_the_jail():
         timeout=300,
     )
     jail = FakeJail(result=ExecResult(0, "ok", ""))
-    broker = Broker(build_manifest({"run_tests": capability}), jail, PolicyEngine())
+    broker = Broker(build_manifest({"pytest": capability}), jail, PolicyEngine())
 
-    _handle(broker, _call("run_tests", {}))
+    _handle(broker, _call("pytest", {}))
 
     assert jail.exec_timeouts == [300]
 
@@ -270,14 +270,14 @@ def test_deny_capability_never_reaches_the_jail():
 
 def _ask_always_manifest():
     capability = Capability(
-        name="run_command",
+        name="bash",
         description="run",
         policy="ask-always",
         params={"command": Param(type="string", description="", required=True)},
         grants=Grant(),
         runner="bash -c {command}",
     )
-    return build_manifest({"run_command": capability})
+    return build_manifest({"bash": capability})
 
 
 def _unrestricted_manifest():
@@ -302,7 +302,7 @@ def test_ask_always_decline_denies_and_skips_the_jail():
         audit=audit,
     )
 
-    result = _handle(broker, _call("run_command", {"command": "ls"}))
+    result = _handle(broker, _call("bash", {"command": "ls"}))
 
     assert result.is_error
     assert "denied" in result.output
@@ -321,7 +321,7 @@ def test_ask_always_approval_runs_command_in_jail():
         PolicyEngine(prompt=lambda *_: True),
     )
 
-    result = _handle(broker, _call("run_command", {"command": "ls -la"}))
+    result = _handle(broker, _call("bash", {"command": "ls -la"}))
 
     assert not result.is_error
     # The command is a single shell-escaped argument to bash -c.
