@@ -14,6 +14,7 @@ import json
 import os
 
 from tartarus.config import Config
+from tartarus.constants import CERT_ENV_VARS
 from tartarus.manifest import Manifest
 from tartarus.manifest_loader import (
     ManifestError,
@@ -74,29 +75,24 @@ def load_bundle(bundle_path: str) -> Manifest:
         raise BundleError(f"invalid bundle manifest: {error}") from error
 
 
-# Certificate environment variables every TLS client in the jail consults; all
-# point at the manifest's CA bundle (whose store root the shell closure binds).
-_CERT_ENV_VARS = (
-    "SSL_CERT_FILE",
-    "NIX_SSL_CERT_FILE",
-    "CURL_CA_BUNDLE",
-    "REQUESTS_CA_BUNDLE",
-)
-
-
-def base_env_from(ca_bundle_file: str) -> dict[str, str]:
+def base_env_from(
+    ca_bundle_file: str,
+    shell_env: dict[str, str] | None = None,
+) -> dict[str, str]:
     """The jail's baseline environment: CA bundle cert vars + a fixed locale.
 
     Fails closed if the bundle declares no CA bundle, rather than leaving TLS to
     an unset/unbound certificate. `C.UTF-8` is built into glibc, so it needs no
-    locale package in the closure.
+    locale package in the closure. Agent-declared ``shell_env`` is merged on
+    top (the manifest validator rejects reserved names).
     """
     if not ca_bundle_file:
         raise BundleError(
             "bundle declares no CA bundle (caBundle); refusing to run with an "
             "unset certificate"
         )
-    base_env = {var: ca_bundle_file for var in _CERT_ENV_VARS}
+    base_env = {var: ca_bundle_file for var in CERT_ENV_VARS}
     base_env["LC_ALL"] = "C.UTF-8"
     base_env["LANG"] = "C.UTF-8"
+    base_env.update(shell_env or {})
     return base_env

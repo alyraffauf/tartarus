@@ -7,13 +7,28 @@ tool.
 
 from __future__ import annotations
 
+import re
 import string
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from tartarus.constants import STRICT_CONFIG
+from tartarus.constants import CERT_ENV_VARS, STRICT_CONFIG
 from typing_extensions import Self
+
+
+# Environment variable names the harness owns and will not let an agent override.
+# This set is mirrored in lib/agents.nix (shellEnvReservedNames); the two must
+# stay in sync. test_reserved_shell_env_names_canonical pins this side.
+_RESERVED_SHELL_ENV_NAMES = frozenset(CERT_ENV_VARS) | {
+    "BASH_ENV",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "PATH",
+}
+
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 # ── Grant ────────────────────────────────────────────────────────────────────
@@ -270,6 +285,12 @@ class Manifest(BaseModel):
     # contents. `shell_closure` is filled after realization (manifest_loader).
     shell_closure_file: str = ""
     shell_closure: list[str] = Field(default_factory=list)
+    # Agent-declared extra env vars injected into every jailed call. Keys are
+    # validated against reserved names the harness owns (PATH, HOME, cert vars,
+    # proxy-like suffixes, and anything starting with TARTARUS_).
+    shell_env: dict[str, str] = Field(default_factory=dict)
+    # Optional store path of a bash hook sourced via BASH_ENV before every call.
+    shell_hook: str = ""
 
     @field_validator("ca_bundle_file")
     @classmethod
@@ -299,6 +320,34 @@ class Manifest(BaseModel):
                 raise ValueError(f"shellPath entry '{entry}' must be under /nix/store")
             if not entry.endswith("/bin"):
                 raise ValueError(f"shellPath entry '{entry}' must end with /bin")
+        return v
+
+    @field_validator("shell_env")
+    @classmethod
+    def _validate_shell_env(cls, v: dict[str, str]) -> dict[str, str]:
+        for key in v:
+            if not _ENV_NAME_RE.fullmatch(key):
+                raise ValueError(
+                    f"shellEnv key '{key}' is not a valid environment variable name"
+                )
+            upper = key.upper()
+            if upper in _RESERVED_SHELL_ENV_NAMES:
+                raise ValueError(f"shellEnv key '{key}' is reserved and cannot be overridden")
+            if upper.endswith("_PROXY"):
+                raise ValueError(
+                    f"shellEnv key '{key}' matches the reserved *_PROXY suffix"
+                )
+            if upper.startswith("TARTARUS_"):
+                raise ValueError(
+                    f"shellEnv key '{key}' matches the reserved TARTARUS_ prefix"
+                )
+        return v
+
+    @field_validator("shell_hook")
+    @classmethod
+    def _validate_shell_hook(cls, v: str) -> str:
+        if v and not v.startswith("/nix/store/"):
+            raise ValueError("shellHook must be under /nix/store")
         return v
 
     @model_validator(mode="after")

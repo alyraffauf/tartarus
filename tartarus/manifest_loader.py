@@ -70,6 +70,16 @@ def validate_realized_package_bins(manifest: Manifest) -> None:
         )
 
 
+def validate_realized_shell_hook(manifest: Manifest) -> None:
+    hook = manifest.shell_hook
+    if not hook:
+        return
+    if not os.path.isfile(hook):
+        raise ManifestError(
+            f"shell hook '{hook}' is missing; the bundle is not fully realized"
+        )
+
+
 def resolve_realized_closures(manifest: Manifest) -> Manifest:
     """Read each emitted `store-paths` file into its grant's `closure_paths`.
 
@@ -79,6 +89,7 @@ def resolve_realized_closures(manifest: Manifest) -> Manifest:
     missing or malformed closure file refuses to start (mirrors
     `validate_realized_package_bins`).
     """
+    validate_realized_shell_hook(manifest)
     shell_closure = _read_closure_file("agent shell", manifest.shell_closure_file)
     capabilities = {
         name: capability.model_copy(
@@ -122,6 +133,8 @@ def _map_manifest_raw(raw: dict[str, Any]) -> dict[str, Any]:
         "ca_bundle_file": raw.get("caBundle", ""),
         "shell_closure_file": raw.get("shellClosure", ""),
         "shell_path": raw.get("shellPath", ""),
+        "shell_env": raw.get("shellEnv", {}),
+        "shell_hook": raw.get("shellHook", ""),
     }
     if "systemPrompt" in raw:
         mapped["system_prompt"] = raw["systemPrompt"]

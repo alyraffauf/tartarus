@@ -360,7 +360,10 @@ async def _async_main(argv: list[str]) -> int:
     try:
         bundle_path = resolve_bundle(config)
         manifest = load_bundle(bundle_path)
-        base_env = {**base_env_from(manifest.ca_bundle_file), "HOME": "/work"}
+        base_env = {
+            **base_env_from(manifest.ca_bundle_file, manifest.shell_env),
+            "HOME": "/work",
+        }
     except BundleError as error:
         print(f"startup error: {error}", file=sys.stderr)
         return 1
@@ -379,6 +382,7 @@ async def _async_main(argv: list[str]) -> int:
         manifest.shell_path,
         base_env=base_env,
         shell_closure=manifest.shell_closure,
+        shell_hook=manifest.shell_hook,
     )
     policy = PolicyEngine(headless=config.headless)
     # Background tasks: the registry monitors detached runs on this async loop.

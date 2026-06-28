@@ -297,12 +297,36 @@ let
           type = types.nullOr modelType;
           default = null;
         };
-        shell.packages = lib.mkOption {
-          type = types.listOf types.package;
-          default = with pkgs; [
-            bash
-            coreutils
-          ];
+        shell = {
+          packages = lib.mkOption {
+            type = types.listOf types.package;
+            default = with pkgs; [
+              bash
+              coreutils
+            ];
+            description = "Packages whose /bin directories form the agent's baseline PATH.";
+          };
+          env = lib.mkOption {
+            type = types.attrsOf types.str;
+            default = { };
+            description = ''
+              Extra environment variables exposed to every jailed call.
+              Reserved names (PATH, HOME, locale vars, cert vars, proxy vars,
+              BASH_ENV, and names beginning with TARTARUS_) are rejected at
+              build time.
+            '';
+          };
+          hook = lib.mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = ''
+              Optional bash script sourced by every jailed call via BASH_ENV.
+              It runs after jail setup — the closure is bound, PATH is composed
+              (shell PATH plus the call's grant bins), and shell.env is exported —
+              so it can reach any tool the command itself can. It must be
+              idempotent: a command that is itself `bash -c …` re-sources it.
+            '';
+          };
         };
         capabilities = lib.mkOption {
           type = types.attrsOf (types.submodule capabilityType);
@@ -354,7 +378,8 @@ let
       ) capabilities;
       shellBinPackages = config.shell.packages ++ [ pkgs.bashInteractive ];
       shellRootList = map packageBinRoot shellBinPackages;
-      shellRoots = shellRootList ++ [ pkgs.cacert ];
+      hookDrv = lib.mapNullable (pkgs.writeText "tartarus-shell-hook") config.shell.hook;
+      shellRoots = shellRootList ++ [ pkgs.cacert ] ++ lib.optional (hookDrv != null) hookDrv;
       shellClosureDrv = pkgs.closureInfo { rootPaths = shellRoots; };
       compiledManifest =
         compileManifest grantInfo capabilities
@@ -362,9 +387,34 @@ let
           caBundle = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
           shellClosure = "${shellClosureDrv}/store-paths";
           shellPath = lib.concatStringsSep ":" (lib.unique (map (root: "${root}/bin") shellRootList));
+          shellEnv = config.shell.env;
         }
         // lib.optionalAttrs (config.systemPrompt != null) { inherit (config) systemPrompt; }
-        // lib.optionalAttrs (config.model != null) { inherit (config) model; };
+        // lib.optionalAttrs (config.model != null) { inherit (config) model; }
+        // lib.optionalAttrs (hookDrv != null) { shellHook = "${hookDrv}"; };
+      # Mirrored in tartarus/manifest.py (_RESERVED_SHELL_ENV_NAMES); the two
+      # must stay in sync. Drift is silent except for the Python pin test
+      # test_reserved_shell_env_names_canonical — update both when editing this.
+      shellEnvReservedNames = [
+        "BASH_ENV"
+        "HOME"
+        "LANG"
+        "LC_ALL"
+        "PATH"
+        "SSL_CERT_FILE"
+        "NIX_SSL_CERT_FILE"
+        "CURL_CA_BUNDLE"
+        "REQUESTS_CA_BUNDLE"
+      ];
+      isValidShellEnvName =
+        name:
+        let
+          upper = lib.toUpper name;
+        in
+        builtins.match "^[A-Za-z_][A-Za-z0-9_]*$" name != null
+        && !(lib.elem upper shellEnvReservedNames)
+        && !(lib.hasSuffix "_PROXY" upper)
+        && !(lib.hasPrefix "TARTARUS_" upper);
       assertWarn =
         result:
         let
@@ -394,12 +444,21 @@ let
         };
       };
 
+      config.assertions = [
+        {
+          assertion = lib.all isValidShellEnvName (lib.attrNames config.shell.env);
+          message = "Tartarus shell.env contains invalid or reserved variable names.";
+        }
+      ];
+
       config.build = {
         manifest = assertWarn compiledManifest;
 
         shell = assertWarn (
           pkgs.mkShellNoCC {
             packages = config.shell.packages;
+            env = config.shell.env;
+            shellHook = lib.optionalString (config.shell.hook != null) config.shell.hook;
           }
         );
 

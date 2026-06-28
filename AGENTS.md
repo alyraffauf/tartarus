@@ -107,6 +107,13 @@ From `tartarus/jail.py` and `PLAN.md §8`:
   `name` in the capability body; the attrset key is the identity.
 - The agent's `shell` is the baseline PATH baked into the manifest; keep it
   minimal. Tool-specific programs go in that capability's `grants.packages`.
+  `shell.env` adds env vars to every call (reserved names rejected at build
+  time); `shell.hook` is a bash script sourced before every call via `BASH_ENV`.
+- Every jailed command runs under `bash --noprofile --norc -c`, so runner
+  templates get full shell semantics (pipes, globbing, `$VAR`). Model-supplied
+  values are `shlex.quote`d by `interpolate`, so they stay confined to their
+  argument position. A declared `shell.hook` must be idempotent — a runner that
+  is itself `bash -c …` re-sources it via `BASH_ENV`.
 - `kind = "background"` launches detached (handle returned immediately);
   `kind = "control"` capabilities (`bg_status`/`bg_output`/`bg_stop`) carry no
   runner and no grants — they act on the background registry, not the jail.

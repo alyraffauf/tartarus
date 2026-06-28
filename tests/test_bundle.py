@@ -59,6 +59,8 @@ def _minimal_manifest(shell_closure_file: str) -> dict:
         },
         "shellClosure": shell_closure_file,
         "shellPath": "",
+        "shellEnv": {},
+        "shellHook": "",
         "caBundle": "/nix/store/cacert/etc/ssl/certs/ca-bundle.crt",
     }
 
@@ -141,6 +143,17 @@ def test_base_env_from_sets_cert_vars_and_locale():
 def test_base_env_from_fails_closed_without_bundle():
     with pytest.raises(BundleError, match="caBundle"):
         base_env_from("")
+
+
+def test_base_env_from_merges_shell_env():
+    cert = "/nix/store/cacert/etc/ssl/certs/ca-bundle.crt"
+
+    env = base_env_from(cert, {"EDITOR": "vi", "GIT_PAGER": "cat"})
+
+    assert env["EDITOR"] == "vi"
+    assert env["GIT_PAGER"] == "cat"
+    assert env["SSL_CERT_FILE"] == cert
+    assert env["LC_ALL"] == "C.UTF-8"
 
 
 # --- resolve_bundle ---------------------------------------------------------

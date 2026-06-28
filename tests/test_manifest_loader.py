@@ -705,3 +705,87 @@ def test_shell_path_entry_without_bin_suffix_is_rejected():
 
     with pytest.raises(ManifestError, match="must end with /bin"):
         build_manifest_from_raw(raw)
+
+
+def test_shell_env_is_mapped():
+    raw = _valid_raw()
+    raw["shellEnv"] = {"EDITOR": "vi"}
+
+    manifest = build_manifest_from_raw(raw)
+
+    assert manifest.shell_env == {"EDITOR": "vi"}
+
+
+def test_shell_env_rejects_reserved_name():
+    raw = _valid_raw()
+    raw["shellEnv"] = {"PATH": "/tmp"}
+
+    with pytest.raises(ManifestError, match="reserved"):
+        build_manifest_from_raw(raw)
+
+
+def test_shell_env_rejects_proxy_like_name():
+    raw = _valid_raw()
+    raw["shellEnv"] = {"HTTPS_PROXY": "x"}
+
+    with pytest.raises(ManifestError, match=r".*_PROXY"):
+        build_manifest_from_raw(raw)
+
+
+def test_shell_env_rejects_tartarus_prefix():
+    raw = _valid_raw()
+    raw["shellEnv"] = {"TARTARUS_FOO": "x"}
+
+    with pytest.raises(ManifestError, match="TARTARUS_"):
+        build_manifest_from_raw(raw)
+
+
+def test_shell_env_rejects_invalid_variable_name():
+    raw = _valid_raw()
+    raw["shellEnv"] = {"123_FOO": "x"}
+
+    with pytest.raises(ManifestError, match="not a valid environment"):
+        build_manifest_from_raw(raw)
+
+
+def test_shell_hook_must_be_under_nix_store():
+    raw = _valid_raw()
+    raw["shellHook"] = "/tmp/hook.sh"
+
+    with pytest.raises(ManifestError, match="under /nix/store"):
+        build_manifest_from_raw(raw)
+
+
+def test_resolve_realized_closures_requires_existing_hook_file(tmp_path):
+    shell_file = tmp_path / "shell-store-paths"
+    shell_file.write_text("/nix/store/bash\n")
+    hook_file = tmp_path / "hook"
+    hook_file.write_text('echo "hi"\n')
+
+    manifest = build_manifest_from_raw(_valid_raw())
+    manifest = manifest.model_copy(
+        update={
+            "shell_closure_file": str(shell_file),
+            "shell_hook": str(hook_file),
+        }
+    )
+
+    resolved = resolve_realized_closures(manifest)
+
+    assert resolved.shell_hook == str(hook_file)
+
+
+def test_resolve_realized_closures_rejects_missing_hook_file(tmp_path):
+    shell_file = tmp_path / "shell-store-paths"
+    shell_file.write_text("/nix/store/bash\n")
+
+    manifest = build_manifest_from_raw(_valid_raw())
+    manifest = manifest.model_copy(
+        update={
+            "shell_closure_file": str(shell_file),
+            "shell_hook": "/nix/store/missing-hook",
+        }
+    )
+
+    with pytest.raises(ManifestError, match="shell hook"):
+        resolve_realized_closures(manifest)

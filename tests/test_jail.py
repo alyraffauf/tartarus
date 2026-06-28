@@ -15,7 +15,7 @@ import tartarus.jail
 import pytest
 
 from tartarus.shell import ShellError, resolve_minimal_shell_path
-from tartarus.jail import JailBuilder, JailError
+from tartarus.jail import JailBuilder, JailError, JailSpec
 from tartarus.manifest import Grant
 from tests.helpers import HttpServer
 
@@ -69,6 +69,55 @@ def test_echo_runs_confined(tmp_path, shell_path, shell_closure):
 
     assert result.code == 0
     assert "banana" in result.stdout
+
+
+def test_bwrap_argv_wraps_command_with_shell_hook(tmp_path):
+    jail = JailBuilder(str(tmp_path), "/nix/store/bash/bin")
+    spec = JailSpec(
+        work_tree=str(tmp_path),
+        shell_path="/nix/store/bash/bin",
+        base_env={"LC_ALL": "C.UTF-8"},
+        shell_hook="/nix/store/hook",
+    )
+
+    argv = jail._bwrap_argv(spec, "echo hi")
+
+    bash_env_idx = argv.index("BASH_ENV")
+    assert argv[bash_env_idx + 1] == "/nix/store/hook"
+    assert argv[-5:] == ["bash", "--noprofile", "--norc", "-c", "echo hi"]
+
+
+def test_bwrap_argv_wraps_command_without_hook(tmp_path):
+    jail = JailBuilder(str(tmp_path), "/nix/store/bash/bin")
+    spec = JailSpec(
+        work_tree=str(tmp_path),
+        shell_path="/nix/store/bash/bin",
+        base_env={"LC_ALL": "C.UTF-8"},
+    )
+
+    argv = jail._bwrap_argv(spec, "echo hi")
+
+    assert "BASH_ENV" not in argv
+    assert argv[-5:] == ["bash", "--noprofile", "--norc", "-c", "echo hi"]
+
+
+@_NEEDS_SANDBOX
+def test_shell_hook_runs_before_unrestricted_command(tmp_path, shell_path):
+    hook = tmp_path / "hook"
+    hook.write_text('export HOOK_FLAG=ran\n')
+    jail = JailBuilder(str(tmp_path), shell_path)
+    spec = JailSpec(
+        work_tree=str(tmp_path),
+        shell_path=shell_path,
+        base_env={},
+        shell_hook=str(hook),
+        unrestricted=True,
+    )
+
+    result = _exec(jail, spec, "bash -c 'echo $HOOK_FLAG'")
+
+    assert result.code == 0
+    assert "ran" in result.stdout
 
 
 @_NEEDS_SANDBOX

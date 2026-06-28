@@ -11,6 +11,17 @@
 
   name = "default";
 
+  # Example shell configuration. Uncomment to customize the baseline environment
+  # reachable by every jailed call. Heavier tools should stay in per-capability
+  # grants so they do not bloat every shell closure.
+  # shell = {
+  #   packages = [ pkgs.bash pkgs.coreutils pkgs.gnugrep pkgs.findutils ];
+  #   env = { GIT_PAGER = "cat"; PAGER = "cat"; };
+  #   hook = ''
+  #     echo "Hello Agent!"
+  #   '';
+  # };
+
   model = {
     baseUrl = "https://opencode.ai/zen/v1";
     name = "glm-5.2";

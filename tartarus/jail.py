@@ -14,7 +14,6 @@ import asyncio
 import codecs
 import os
 import signal
-import shlex
 import shutil
 import subprocess
 import uuid
@@ -72,13 +71,13 @@ class JailSpec:
     writable: list[str] = field(default_factory=list)
     extra_path: list[str] = field(default_factory=list)  # granted package bin dirs
     # The store paths bound read-only into the jail: the agent's baseline closure
-    # (shell PATH + CA bundle) plus this grant's package closure. The jail sees
-    # exactly these store paths and nothing else, so a capability reaches only its
-    # declared closure (PLAN.md §13).
+    # (shell PATH + CA bundle closure), before this call's own grant closure is added.
     bind_paths: list[str] = field(default_factory=list)
     allowed_hosts: list[str] = field(default_factory=list)
     network: Literal["none", "proxy"] = "none"
     unrestricted: bool = False
+    # Optional store path of a bash hook sourced via BASH_ENV before the command.
+    shell_hook: str = ""
 
     @field_validator("writable")
     @classmethod
@@ -102,6 +101,7 @@ class JailBuilder:
         base_env: dict[str, str] | None = None,
         proxy_factory: Callable[[list[str]], FilteringProxy] | None = None,
         shell_closure: list[str] | None = None,
+        shell_hook: str = "",
     ):
         self._work_tree = os.path.abspath(work_tree)
         self._shell_path = shell_path
@@ -111,6 +111,7 @@ class JailBuilder:
         # The baseline store paths every jailed call binds (shell PATH + CA
         # bundle closure), before this call's own grant closure is added.
         self._shell_closure = list(shell_closure or [])
+        self._shell_hook = shell_hook
 
     def build(self, grant: Grant) -> JailSpec:
         try:
@@ -124,6 +125,7 @@ class JailBuilder:
                 allowed_hosts=list(grant.allowed_hosts),
                 network="proxy" if grant.allowed_hosts else "none",
                 unrestricted=grant.unrestricted,
+                shell_hook=self._shell_hook,
             )
         except ValidationError as error:
             raise JailError(str(error)) from error
@@ -235,10 +237,13 @@ class JailBuilder:
         timeout: int | None,
         output_callback: Callable[[str], None] | None = None,
     ) -> ExecResult:
-        env = {"PATH": self._compose_path(spec), **spec.base_env}
+        env = {
+            "PATH": self._compose_path(spec),
+            **self._bash_hook_env(spec),
+        }
         try:
             proc = await asyncio.create_subprocess_exec(
-                *shlex.split(command),
+                *self._shell_argv(command),
                 cwd=spec.work_tree,
                 env=env,
                 stdout=asyncio.subprocess.PIPE,
@@ -260,7 +265,7 @@ class JailBuilder:
     ) -> list[str]:
         env_args = ["--setenv", "PATH", self._compose_path(spec)]
         env_args += self._network_env_args(proxy_url)
-        for key, value in spec.base_env.items():
+        for key, value in self._bash_hook_env(spec).items():
             env_args += ["--setenv", key, value]
 
         return [
@@ -283,7 +288,7 @@ class JailBuilder:
             "--clearenv",  # start from empty env, then set PATH explicitly
             *env_args,
             "--",
-            *shlex.split(command),
+            *self._shell_argv(command),
         ]
 
     @staticmethod
@@ -344,6 +349,25 @@ class JailBuilder:
         if not spec.extra_path:
             return spec.shell_path
         return ":".join([spec.shell_path, *spec.extra_path])
+
+    @staticmethod
+    def _bash_hook_env(spec: JailSpec) -> dict[str, str]:
+        """Return base_env plus BASH_ENV when the agent declared a shell hook."""
+        env = dict(spec.base_env)
+        if spec.shell_hook:
+            env["BASH_ENV"] = spec.shell_hook
+        return env
+
+    @staticmethod
+    def _shell_argv(command: str) -> list[str]:
+        """Final argv after `--`. Every command runs under a fresh non-interactive
+        bash (`--noprofile --norc`), so runner templates get consistent shell
+        semantics (pipes, globbing, `$VAR`) whether or not a hook is set.
+        Model-supplied values are already shlex.quoted by `interpolate`, so they
+        stay confined to their argument position. When a hook is declared it is
+        sourced via BASH_ENV before the command; the hook must be idempotent
+        because a command that is itself `bash -c …` re-sources BASH_ENV."""
+        return ["bash", "--noprofile", "--norc", "-c", command]
 
 
 async def _wait_for_process(

@@ -2,10 +2,29 @@ from tartarus.manifest import (
     Capability,
     Grant,
     Param,
+    _RESERVED_SHELL_ENV_NAMES,
     build_manifest,
     tool_from_capability,
 )
 from tests.manifest_fixtures import echo_manifest
+
+
+def test_reserved_shell_env_names_canonical():
+    # Pins the Python side of the reserved-name set. lib/agents.nix
+    # (shellEnvReservedNames) mirrors this list; if you change one, change both.
+    assert _RESERVED_SHELL_ENV_NAMES == frozenset(
+        {
+            "BASH_ENV",
+            "CURL_CA_BUNDLE",
+            "HOME",
+            "LANG",
+            "LC_ALL",
+            "NIX_SSL_CERT_FILE",
+            "PATH",
+            "REQUESTS_CA_BUNDLE",
+            "SSL_CERT_FILE",
+        }
+    )
 
 
 def test_echo_fixture_manifest_exposes_echo_tool():
