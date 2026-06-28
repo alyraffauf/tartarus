@@ -39,6 +39,30 @@ Assistant text, tool starts/finishes, and foreground command output stream live.
 Ctrl-C cancels the in-flight turn, tears down any running jailed process, and
 returns to the prompt without corrupting the transcript.
 
+## Start Your Own Agent
+
+To build your own agent instead of running this repo, scaffold a fresh flake
+from the bundled template:
+
+```sh
+mkdir my-agent && cd my-agent
+nix flake init -t github:alyraffauf/tartarus
+```
+
+That writes a minimal `flake.nix` and `agent.nix` (the `coding` module plus a
+model block). The template's dev shell ships the packaged harness as the
+`tartarus` command, so you do not need `uv` or a checkout of this repo:
+
+```sh
+nix develop
+export OPENCODE_API_KEY=...
+tartarus "summarize this project"
+```
+
+Edit `agent.nix` to add capabilities, swap the model, or import other
+`tartarus.modules`, then re-run `tartarus`; the first run rebuilds the bundle.
+See [Defining An Agent](#defining-an-agent) for the capability schema.
+
 ## What You Get
 
 - A realized agent bundle at `agents.<system>.<agent>.config.build.bundle` containing
@@ -244,8 +268,10 @@ decision, grant delta, command, exit code, output length, and errors.
 | Path | Purpose |
 |---|---|
 | `agent.nix` | Example agent and capabilities |
+| `agent-modules/` | Reusable agent modules exposed as `tartarus.modules` |
 | `lib/agents.nix` | Nix compiler for `agents.<system>.<agent>.config.build.bundle` |
 | `tartarus/` | Python harness: config, bundle loading, provider, loop, broker, jail |
+| `templates/default/` | `nix flake init -t` starter for a new agents flake |
 | `tests/` | Unit and integration tests |
 | `PLAN.md` | Architecture, contract details, and implementation history |
 

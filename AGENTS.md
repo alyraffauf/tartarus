@@ -83,12 +83,15 @@ From `tartarus/jail.py` and `PLAN.md §8`:
 - Policies: `auto`, `ask-once`, `ask-always`, `deny`. `deny` capabilities are
   never exposed as tools. `TARTARUS_HEADLESS=1` makes `ask-*` fail closed.
 
-## Editing the agent and capabilities (`agent.nix`, `lib/agents.nix`)
+## Editing the agent and capabilities (`agent.nix`, `agent-modules/`, `lib/agents.nix`)
 
 - Agents are NixOS-style module graphs passed to `tartarus.lib.tartarusAgent`,
   which takes `{ system, modules, specialArgs }` like `nixpkgs.lib.nixosSystem`.
-  Reusable entries under `tartarus.modules` are ordinary agent modules: they can
+  Reusable entries under `tartarus.modules` (defined in `agent-modules/default.nix`,
+  exposed as the flake's `modules` output) are ordinary agent modules: they can
   set capabilities, prompts, shell packages, imports, or any other agent option.
+  `tartarus.modules.coding` imports the common coding set; `tartarus.modules.default`
+  aliases it.
 - The package set comes from a NixOS-style `nixpkgs` module: `nixpkgs.hostPlatform`
   defaults to `system`; set `nixpkgs.config`/`nixpkgs.overlays`/`nixpkgs.pkgs` in a
   module to override it. Modules receive the result as `pkgs` — there is no `pkgs`
@@ -115,8 +118,13 @@ From `tartarus/jail.py` and `PLAN.md §8`:
 - Commit style: lowercase conventional-commit prefixes with a scope
   (`tests:`, `jail:`, `agent:`, `manifest_loader:`, `nix/agent:`), short
   subject, no brackets.
-- The shipped `default` agent's tools live in `agent.nix`: read/search/git
-  inspection, `write_file`/`edit_file` (ask-once), `run_command`/
-  `run_background_command` (ask-always), `bg_*` controls, `format_code`
-  (nixfmt), `run_tests` (pytest, 300s timeout), `run_ephemeral_command`,
-  `write_artifact`, and the networked `fetch_*` examples.
+- The shipped `default` agent's tools come from two places. The reusable
+  `tartarus.modules` (in `agent-modules/default.nix`) supply `read`, `list`,
+  `glob`, `grep` (auto), `write`/`edit` (ask-once), `bash` (ask-always), and
+  `web_fetch` (ask-always, proxy to any host); `tartarus.modules.coding` bundles
+  them and `agent.nix` imports it. `agent.nix` itself adds `jq`,
+  `git_status`/`git_diff`/`git_log`/`git_show` (auto), `background_bash`
+  (ask-always) with its `bg_status`/`bg_output` (auto) and `bg_stop` (ask-once)
+  controls, `format_nix` (nixfmt, ask-once), `pytest` (ask-once, 300s timeout),
+  `write_artifact` (ask-always), the networked `pypi_versions` (ask-once) and
+  `fetch_rfc` (auto) examples, and a denied `shell_escape` (unrestricted).
