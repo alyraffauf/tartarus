@@ -18,7 +18,6 @@ access declared for that tool.
 Prerequisites:
 
 - Nix with flakes enabled
-- Python 3.13+ and `uv`
 - Linux with `bubblewrap` available for jailed execution (`x86_64-linux` or `aarch64-linux`)
 - An OpenAI-compatible chat-completions endpoint
 
@@ -26,13 +25,13 @@ Set an API key and ask the default agent a question:
 
 ```sh
 export OPENCODE_API_KEY=...
-uv run python main.py "summarize the uncommitted changes in this repo"
+nix run .#tartarus -- "summarize the uncommitted changes in this repo"
 ```
 
 With no prompt argument, Tartarus starts an interactive REPL:
 
 ```sh
-uv run python main.py
+nix run .#tartarus
 ```
 
 Assistant text, tool starts/finishes, and foreground command output stream live.
@@ -51,7 +50,7 @@ nix flake init -t github:alyraffauf/tartarus
 
 That writes a minimal `flake.nix` and `agent.nix` (the `coding` module plus a
 model block). The template's dev shell ships the packaged harness as the
-`tartarus` command, so you do not need `uv` or a checkout of this repo:
+`tartarus` command, so you do not need a checkout of this repo:
 
 ```sh
 nix develop
@@ -85,20 +84,33 @@ runs freely.
 
 ## Running Agents
 
-By default Tartarus builds and loads:
+Tartarus resolves the agent bundle at startup and caches nothing between runs.
+The algorithm is:
 
-```text
-path:.#agents.<host-system>.default.config.build.bundle
-```
+1. If `TARTARUS_BUNDLE` is set, use that store path directly and skip Nix.
+2. Otherwise build `<TARTARUS_FLAKE_REF>#agents.<host-system>.<agent-name>.config.build.bundle`
+   via `nix build --no-link --print-out-paths`.
 
-Select another agent from the same flake with either an env var or an inline
-selector:
+The three slots are:
+
+- `TARTARUS_FLAKE_REF` — the flake reference. Defaults to `path:.` (the current
+  directory). Override with `github:org/repo`, `path:/some/dir`, etc.
+- `<host-system>` — derived from the host (the harness calls `nix build` for
+  `x86_64-linux` or `aarch64-linux`). It is not configurable.
+- `<agent-name>` — precedence: an inline `.#<name>` selector as the first
+  positional argument wins over `TARTARUS_AGENT`, which wins over `default`.
+
+The inline selector is a harness CLI convention (parsed after `nix run .#tartarus --`),
+not a flake output selector. Use `--` to protect it and the prompt from nix's
+argument parser:
 
 ```sh
+# Env selector
 export TARTARUS_AGENT=research
-uv run python main.py "inspect this project"
+nix run .#tartarus -- "inspect this project"
 
-uv run python main.py .#default "what packages are available on PyPI for typer?"
+# Inline selector (wins over the env var)
+nix run .#tartarus -- .#default "what packages are available on PyPI for typer?"
 ```
 
 Point Tartarus at another flake:
@@ -106,19 +118,29 @@ Point Tartarus at another flake:
 ```sh
 export TARTARUS_FLAKE_REF=github:your-org/your-agents
 export TARTARUS_AGENT=default
-uv run python main.py
+nix run .#tartarus
+```
+
+If multiple agents live under `agents.<system>`, name them in the flake and
+pick one with `TARTARUS_AGENT` or `.#<name>`:
+
+```nix
+agents.${system} = {
+  default = tartarus.lib.tartarusAgent { /* ... */ };
+  research  = tartarus.lib.tartarusAgent { /* ... */ };
+};
 ```
 
 Use a prebuilt/copied bundle without needing the source flake at runtime:
 
 ```sh
+# On the build machine:
 nix build .#agents.x86_64-linux.default.config.build.bundle --no-link --print-out-paths
 nix copy --to <store-or-cache> /nix/store/...-bundle
 
 # On the receiving machine:
 nix copy --from <store-or-cache> /nix/store/...-bundle
-export TARTARUS_BUNDLE=/nix/store/...-bundle
-uv run python main.py
+TARTARUS_BUNDLE=/nix/store/...-bundle nix run github:alyraffauf/tartarus#tartarus
 ```
 
 Secrets are never part of the bundle. API keys and deployment-specific headers
@@ -132,42 +154,35 @@ example agent is in `agent.nix`.
 
 ```nix
 {
-  inputs.tartarus.url = "github:your-org/tartarus";
+  inputs.tartarus.url = "github:alyraffauf/tartarus";
   inputs.nixpkgs.follows = "tartarus/nixpkgs";
 
   outputs = { self, tartarus, nixpkgs, ... }:
-    let
-      system = "x86_64-linux";
-    in
-    {
+    let system = "x86_64-linux"; in {
       agents.${system}.default = tartarus.lib.tartarusAgent {
         inherit system;
         modules = [
           tartarus.modules.coding
           ({ pkgs, ... }: {
+            name = "default";
             systemPrompt = "You are a careful coding agent.";
-            shell.packages = with pkgs; [ bash coreutils ];
-
-            capabilities.read_package_json = {
-              description = "Read package.json from the work tree.";
-              policy = "auto";
-              params = { };
-              grants.packages = [ pkgs.jq ];
-              runner = "jq . package.json";
-            };
 
             model = {
-              provider = "openai-compat";
               baseUrl = "https://opencode.ai/zen/v1";
               name = "glm-5.2";
               maxTokens = 32768;
               sampling = { temperature = 0.6; };
             };
+
+            capabilities.read_package_json = {
+              description = "Read package.json from the work tree.";
+              policy = "auto";
+              grants.packages = [ pkgs.jq ];
+              runner = "jq . package.json";
+            };
           })
         ];
       };
-
-      packages.${system}.default = self.agents.${system}.default.config.build.bundle;
     };
 }
 ```
@@ -184,31 +199,22 @@ A capability declares:
   capabilities
 
 The baseline `shell` is shared by every jailed call, so keep it small. Put
-tool-specific programs in that capability's package grants.
+tool-specific programs in that capability's package grants and avoid duplicating
+packages that are already defaults (the base shell includes `bash` and `coreutils`).
 
-`tartarusAgent` mirrors `nixpkgs.lib.nixosSystem`: it takes
-`{ system, modules, specialArgs }` and configures its package set through a
-NixOS-style `nixpkgs` module. `nixpkgs.hostPlatform` defaults to `system`, and
-any module may set `nixpkgs.config` (e.g. `allowUnfree`), `nixpkgs.overlays`, or
-`nixpkgs.pkgs` to override it — every module then receives the result as `pkgs`.
+`tartarusAgent` takes `{ system, modules, specialArgs }`. `nixpkgs.hostPlatform`
+defaults to `system`; a module can override the package set with `nixpkgs.config`,
+`nixpkgs.overlays`, or `nixpkgs.pkgs`, and every module then receives the result
+as `pkgs`. Build outputs live at `config.build.{manifest,bundle,shell}`, hence
+`agents.<system>.<name>.config.build.bundle`.
 
-An agent's `name` option labels its bundle derivation (`tartarus-<name>-bundle`),
-mirroring how `networking.hostName` names a NixOS system. It defaults to `agent`;
-set it per agent (conventionally matching the `agents.<system>.<name>` key) for
-descriptive, non-colliding labels in multi-agent flakes.
+Set `name` per agent (conventionally matching the `agents.<system>.<name>` key) so
+its bundle derivation is labelled `tartarus-<name>-bundle` and multi-agent flakes do
+not collide. It defaults to `agent` otherwise.
 
-Like `nixosSystem`, `tartarusAgent` returns the module-evaluation result —
-`config`, `options`, `pkgs`, and `extendModules` — and its build outputs live in
-the config at `config.build.{manifest,bundle,shell}` (the agent analog of
-`config.system.build.toplevel`). Hence `agents.<system>.<name>.config.build.bundle`.
-
-`tartarus.modules` is a flat catalog of ordinary agent modules. Some entries set
-one capability (`read`, `list`, `write`, `edit`, `glob`, `grep`, `bash`,
-`webFetch`), while others can set any valid agent options.
-`tartarus.modules.coding` imports the common coding set, and
-`tartarus.modules.default` aliases it.
-Task/subagent orchestration, todo state, human questions, and skill loading are
-intentionally not modeled as shell capabilities yet.
+`tartarus.modules.coding` (aliased by `tartarus.modules.default`) imports the common
+coding set: `read`, `list`, `glob`, `grep`, `write`, `edit`, `bash`, and `webFetch`.
+Single-capability modules are available if you want to assemble a narrower agent.
 
 ## Configuration
 
@@ -244,7 +250,7 @@ To use a local OpenAI-compatible server:
 export TARTARUS_API_KEY=not-used
 export TARTARUS_BASE_URL=http://localhost:11434/v1
 export TARTARUS_MODEL=llama3.1
-uv run python main.py
+nix run .#tartarus
 ```
 
 ## Sessions And Audit Logs
@@ -253,11 +259,11 @@ Every normal run persists its transcript and prints a session id. Resume or
 inspect sessions with:
 
 ```sh
-uv run python main.py "remember the number 42"
-uv run python main.py --continue "what number?"
-uv run python main.py --resume 20260627-1430 "continue here"
-uv run python main.py --list-sessions
-uv run python main.py --no-session "one-off"
+nix run .#tartarus -- "remember the number 42"
+nix run .#tartarus -- --continue "what number?"
+nix run .#tartarus -- --resume 20260627-1430 "continue here"
+nix run .#tartarus -- --list-sessions
+nix run .#tartarus -- --no-session "one-off"
 ```
 
 Every brokered tool call appends one JSONL audit record, including policy
@@ -277,8 +283,9 @@ decision, grant delta, command, exit code, output length, and errors.
 
 ## Development
 
-Run the test suite:
+The repo is developed from the `nix develop` shell, which supplies Python and
+pytest for hacking on the harness. The packaged `tartarus` binary is exposed by
+the `tartarus` flake output, not by this dev shell.
 
-```sh
-uv run pytest
-```
+See `AGENTS.md` for the developer workflow: running tests, lint, typecheck, and
+the dev-shell Python commands.
