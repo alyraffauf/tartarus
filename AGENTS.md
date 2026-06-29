@@ -105,6 +105,7 @@ From `tartarus/jail.py` and `PLAN.md §8`:
   output is forced (reading `config` is free), mirroring `system.build.toplevel`.
 - Capabilities are keyed attrsets under `capabilities.<name>`. Do not put
   `name` in the capability body; the attrset key is the identity.
+  `context_status` and `context_read` are reserved internal tool names.
 - The agent's `shell` is the baseline PATH baked into the manifest; keep it
   minimal. Tool-specific programs go in that capability's `grants.packages`.
   `shell.env` adds env vars to every call (reserved names rejected at build

@@ -278,6 +278,26 @@ def test_tool_without_capability_is_rejected():
         build_manifest_from_raw(raw)
 
 
+@pytest.mark.parametrize("reserved_name", ["context_status", "context_read"])
+def test_reserved_context_capability_name_is_rejected(reserved_name):
+    raw = _valid_raw()
+    raw["capabilities"][reserved_name] = raw["capabilities"].pop("echo")
+    raw["tools"][0]["name"] = reserved_name
+
+    with pytest.raises(ManifestError, match=f"'{reserved_name}' is reserved"):
+        build_manifest_from_raw(raw)
+
+
+def test_reserved_context_tool_name_without_capability_is_rejected():
+    raw = _valid_raw()
+    raw["tools"].append(
+        {"name": "context_status", "description": "", "parameters": {}}
+    )
+
+    with pytest.raises(ManifestError, match="'context_status' is reserved"):
+        build_manifest_from_raw(raw)
+
+
 def test_invalid_policy_literal_is_rejected():
     raw = _valid_raw()
     raw["capabilities"]["echo"]["policy"] = "sometimes"

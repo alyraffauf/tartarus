@@ -32,6 +32,7 @@ DEFAULT_STATE_DIR = ".tartarus"
 # Leaf names under <work_tree>/.tartarus, shared by every path-deriving call site.
 AUDIT_LOG_LEAF = "audit.jsonl"
 SESSIONS_LEAF = "sessions"
+CONTEXT_LEAF = "context"
 # `path:` copies the directory regardless of git tracking, which keeps local
 # capability edits visible before they are committed.
 DEFAULT_FLAKE_REF = "path:."
@@ -92,6 +93,10 @@ class Config(BaseSettings):
     audit_path: str = ""
     # Directory holding per-conversation transcript files (<id>.jsonl).
     session_dir: str = Field("", validation_alias=AliasChoices("TARTARUS_SESSIONS_DIR"))
+    # Directory holding append-only per-session context ledgers.
+    context_dir: str = Field("", validation_alias=AliasChoices("TARTARUS_CONTEXT_DIR"))
+    context_max_chars: int | None = None
+    context_recent_turns: int | None = None
     output_truncate: int = DEFAULT_OUTPUT_TRUNCATE_CHARS
 
     @model_validator(mode="after")
@@ -102,6 +107,8 @@ class Config(BaseSettings):
             self.audit_path = _default_state_path(self.work_tree, AUDIT_LOG_LEAF)
         if not self.session_dir:
             self.session_dir = _default_state_path(self.work_tree, SESSIONS_LEAF)
+        if not self.context_dir:
+            self.context_dir = _default_state_path(self.work_tree, CONTEXT_LEAF)
         return self
 
 
@@ -114,6 +121,13 @@ def session_dir_from_env() -> str:
     work_tree = os.environ.get("TARTARUS_WORK_TREE") or os.getcwd()
     return os.environ.get("TARTARUS_SESSIONS_DIR") or _default_state_path(
         work_tree, SESSIONS_LEAF
+    )
+
+
+def context_dir_from_env() -> str:
+    work_tree = os.environ.get("TARTARUS_WORK_TREE") or os.getcwd()
+    return os.environ.get("TARTARUS_CONTEXT_DIR") or _default_state_path(
+        work_tree, CONTEXT_LEAF
     )
 
 

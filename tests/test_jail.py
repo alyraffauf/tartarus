@@ -111,7 +111,7 @@ def test_bwrap_argv_wraps_command_without_hook(tmp_path):
 @_NEEDS_SANDBOX
 def test_shell_hook_runs_before_unrestricted_command(tmp_path, shell_path):
     hook = tmp_path / "hook"
-    hook.write_text('export HOOK_FLAG=ran\n')
+    hook.write_text("export HOOK_FLAG=ran\n")
     jail = JailBuilder(str(tmp_path), shell_path)
     spec = JailSpec(
         work_tree=str(tmp_path),

@@ -14,6 +14,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from tartarus.constants import CERT_ENV_VARS, STRICT_CONFIG
+from tartarus.context import CONTEXT_TOOL_NAMES
 from typing_extensions import Self
 
 
@@ -139,6 +140,13 @@ class Capability(BaseModel):
     # For kind == "control": which registry operation this tool performs,
     # one of "status" | "output" | "stop". None for every other kind.
     control: Literal["status", "output", "stop"] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _reject_reserved_tool_name(cls, v: str) -> str:
+        if v in CONTEXT_TOOL_NAMES:
+            raise ValueError(f"capability name '{v}' is reserved")
+        return v
 
     @field_validator("timeout", mode="before")
     @classmethod
@@ -332,7 +340,9 @@ class Manifest(BaseModel):
                 )
             upper = key.upper()
             if upper in _RESERVED_SHELL_ENV_NAMES:
-                raise ValueError(f"shellEnv key '{key}' is reserved and cannot be overridden")
+                raise ValueError(
+                    f"shellEnv key '{key}' is reserved and cannot be overridden"
+                )
             if upper.endswith("_PROXY"):
                 raise ValueError(
                     f"shellEnv key '{key}' matches the reserved *_PROXY suffix"
@@ -358,6 +368,8 @@ class Manifest(BaseModel):
             name = tool.get("name")
             if not isinstance(name, str):
                 raise ValueError("tool 'name' must be a string")
+            if name in CONTEXT_TOOL_NAMES:
+                raise ValueError(f"tool name '{name}' is reserved")
             capability = self.capabilities.get(name)
             if capability is None:
                 raise ValueError(f"tool '{name}' has no matching capability")

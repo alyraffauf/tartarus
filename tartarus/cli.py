@@ -8,6 +8,7 @@ killing the process.
 """
 
 import asyncio
+import os
 import signal
 import sys
 from dataclasses import dataclass
@@ -16,15 +17,17 @@ from tartarus.agent_loop import AgentLoop, ToolFinished, ToolStarted
 from tartarus.audit import FileAuditLog
 from tartarus.background import BackgroundRegistry, Notice
 from tartarus.broker import Broker
+from tartarus.bundle import BundleError, base_env_from, load_bundle, resolve_bundle
 from tartarus.config import (
     Config,
     ConfigError,
     ResolvedRuntime,
+    context_dir_from_env,
     load_config,
     resolve_runtime,
     session_dir_from_env,
 )
-from tartarus.bundle import BundleError, base_env_from, load_bundle, resolve_bundle
+from tartarus.context import ContextError, ContextLedger, ContextLimits, ContextManager
 from tartarus.jail import JailBuilder
 from tartarus.manifest_loader import host_system
 from tartarus.models import TextDelta, ToolOutputDelta
@@ -41,6 +44,8 @@ class SessionFlags:
     continue_latest: bool = False  # --continue: reopen the most recent
     disabled: bool = False  # --no-session: don't persist
     list_sessions: bool = False  # --list-sessions: print and exit
+    context_status: bool = False  # --context-status: print status and exit
+    compact_context: bool = False  # --compact-context: compact current session and exit
 
 
 def _parse_session_flags(argv: list[str]) -> tuple[SessionFlags, list[str]]:
@@ -60,6 +65,10 @@ def _parse_session_flags(argv: list[str]) -> tuple[SessionFlags, list[str]]:
             flags.disabled = True
         elif arg == "--list-sessions":
             flags.list_sessions = True
+        elif arg == "--context-status":
+            flags.context_status = True
+        elif arg == "--compact-context":
+            flags.compact_context = True
         elif arg == "--resume":
             if i + 1 >= len(argv):
                 raise ConfigError("--resume requires a session id")
@@ -157,14 +166,25 @@ async def _send(loop: AgentLoop, messages: list[dict], user_text: str) -> bool:
             pass
 
 
-def _persist(store: SessionStore | None, messages: list[dict]) -> None:
+def _persist(
+    store: SessionStore | None,
+    ledger: ContextLedger | None,
+    messages: list[dict],
+) -> None:
     """Flush newly committed messages, warning (not failing) on write errors."""
     if store is None:
         return
     try:
-        store.append(messages)
+        start_index = store.append(messages)
     except SessionError as error:
         print(f"warning: could not save session: {error}", file=sys.stderr)
+        return
+    if start_index is None or ledger is None:
+        return
+    try:
+        ledger.append_message_events(messages, start_index)
+    except ContextError as error:
+        print(f"warning: could not save context ledger: {error}", file=sys.stderr)
 
 
 async def _run_one_shot(
@@ -172,17 +192,18 @@ async def _run_one_shot(
     prompt: str,
     messages: list[dict],
     store: SessionStore | None,
+    ledger: ContextLedger | None,
     registry: BackgroundRegistry,
     notices: "asyncio.Queue[Notice]",
 ) -> int:
     try:
         if await _send(loop, messages, prompt):
-            _persist(store, messages)
+            _persist(store, ledger, messages)
         # A one-shot run that launched background work waits it out, reacting to
         # each completion, so the task is not killed the instant the turn ends.
         failed = False
         while registry.has_running or not notices.empty():
-            if not await _drain_notice(loop, messages, store, notices):
+            if not await _drain_notice(loop, messages, store, ledger, notices):
                 failed = True
         return 1 if failed else 0
     except ProviderError as error:
@@ -194,6 +215,7 @@ async def _run_repl(
     loop: AgentLoop,
     messages: list[dict],
     store: SessionStore | None,
+    ledger: ContextLedger | None,
     registry: BackgroundRegistry,
     notices: "asyncio.Queue[Notice]",
 ) -> int:
@@ -218,7 +240,7 @@ async def _run_repl(
             continue
 
         if notice_task in done:
-            await _react_to_notice(loop, messages, store, notice_task.result())
+            await _react_to_notice(loop, messages, store, ledger, notice_task.result())
             continue
 
         # notice_task did not win, so the input task is the one that completed.
@@ -234,7 +256,7 @@ async def _run_repl(
             continue
         try:
             if await _send(loop, messages, user_text):
-                _persist(store, messages)
+                _persist(store, ledger, messages)
         except ProviderError as error:
             print(f"provider error: {error}", file=sys.stderr)
 
@@ -247,15 +269,17 @@ async def _drain_notice(
     loop: AgentLoop,
     messages: list[dict],
     store: SessionStore | None,
+    ledger: ContextLedger | None,
     notices: "asyncio.Queue[Notice]",
 ) -> bool:
-    return await _react_to_notice(loop, messages, store, await notices.get())
+    return await _react_to_notice(loop, messages, store, ledger, await notices.get())
 
 
 async def _react_to_notice(
     loop: AgentLoop,
     messages: list[dict],
     store: SessionStore | None,
+    ledger: ContextLedger | None,
     notice: Notice,
 ) -> bool:
     """Turn one background completion into a transcript message + follow-up turn.
@@ -276,7 +300,7 @@ async def _react_to_notice(
     print(f"\n  [background] {notice.task_id} finished (exit {notice.exit_code})")
     try:
         if await _send(loop, messages, text):
-            _persist(store, messages)
+            _persist(store, ledger, messages)
             return True
         return False
     except ProviderError as error:
@@ -306,6 +330,106 @@ def _print_session_list(session_dir: str) -> None:
         if len(preview) > 70:
             preview = preview[:67] + "..."
         print(f"{session_id}  {preview}")
+
+
+def _context_limits(max_chars: int | None, recent_turns: int | None) -> ContextLimits:
+    """Validate context limits, falling back to defaults for unset (None) values.
+
+    The single resolution point for both the env-only inspection path and the
+    config-driven live run, so they cannot validate differently.
+    """
+    defaults = ContextLimits()
+    resolved_max_chars = max_chars if max_chars is not None else defaults.max_chars
+    resolved_recent_turns = (
+        recent_turns if recent_turns is not None else defaults.recent_turns
+    )
+    if resolved_max_chars < 0:
+        raise ConfigError("TARTARUS_CONTEXT_MAX_CHARS must be non-negative")
+    if resolved_recent_turns < 0:
+        raise ConfigError("TARTARUS_CONTEXT_RECENT_TURNS must be non-negative")
+    return ContextLimits(
+        max_chars=resolved_max_chars,
+        recent_turns=resolved_recent_turns,
+    )
+
+
+def _context_limits_from_env() -> ContextLimits:
+    return _context_limits(
+        _int_from_env("TARTARUS_CONTEXT_MAX_CHARS", None),
+        _int_from_env("TARTARUS_CONTEXT_RECENT_TURNS", None),
+    )
+
+
+def _context_limits_from_config(config: Config) -> ContextLimits:
+    return _context_limits(config.context_max_chars, config.context_recent_turns)
+
+
+def _int_from_env(name: str, default: int | None) -> int | None:
+    """Parse an integer env var, or return the default when unset.
+
+    Range validation lives in _context_limits, the single resolution point; this
+    only turns the raw string into an int.
+    """
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except ValueError as error:
+        raise ConfigError(f"{name} must be an integer") from error
+
+
+def _resolve_read_only_session(flags: SessionFlags) -> tuple[SessionStore, list[dict]]:
+    session_dir = session_dir_from_env()
+    if flags.disabled:
+        raise SessionError("--no-session cannot be combined with context inspection")
+    if flags.resume is not None:
+        session_id = SessionStore.resolve(session_dir, flags.resume)
+    else:
+        session_id = SessionStore.latest(session_dir)
+        if session_id is None:
+            raise SessionError(f"no sessions in {session_dir}")
+    store = SessionStore(session_dir, session_id)
+    return store, store.load()
+
+
+def _print_context_status(flags: SessionFlags) -> int:
+    try:
+        store, messages = _resolve_read_only_session(flags)
+        ledger = ContextLedger(context_dir_from_env(), store.session_id)
+        manager = ContextManager(ledger, _context_limits_from_env())
+        status = manager.status(messages)
+    except (ConfigError, ContextError, SessionError) as error:
+        print(f"configuration error: {error}", file=sys.stderr)
+        return 1
+    print(f"session: {store.session_id}")
+    print(f"messages: {status.message_count}")
+    print(f"estimated context chars: {status.estimated_chars}")
+    print(f"effective messages: {status.effective_message_count}")
+    print(f"effective estimated chars: {status.effective_estimated_chars}")
+    print(f"ledger events: {status.ledger_event_count}")
+    print(f"ledger: {status.ledger_path}")
+    return 0
+
+
+def _compact_context(flags: SessionFlags) -> int:
+    try:
+        store, messages = _resolve_read_only_session(flags)
+        ledger = ContextLedger(context_dir_from_env(), store.session_id)
+        event = ContextManager(ledger, _context_limits_from_env()).compact(messages)
+    except (ConfigError, ContextError, SessionError) as error:
+        print(f"configuration error: {error}", file=sys.stderr)
+        return 1
+    if event is None:
+        print(f"session: {store.session_id}")
+        print("compaction: nothing to compact")
+        print(f"ledger: {ledger.path}")
+        return 0
+    covered = event["covered"]
+    print(f"session: {store.session_id}")
+    print(f"compacted messages: {covered['start']}-{covered['end']}")
+    print(f"ledger: {ledger.path}")
+    return 0
 
 
 def _open_session(
@@ -345,6 +469,10 @@ async def _async_main(argv: list[str]) -> int:
     if session_flags.list_sessions:
         _print_session_list(session_dir_from_env())
         return 0
+    if session_flags.context_status:
+        return _print_context_status(session_flags)
+    if session_flags.compact_context:
+        return _compact_context(session_flags)
 
     try:
         config = load_config()
@@ -355,6 +483,13 @@ async def _async_main(argv: list[str]) -> int:
     except (ConfigError, SessionError) as error:
         print(f"configuration error: {error}", file=sys.stderr)
         return 1
+
+    ledger = (
+        ContextLedger(config.context_dir, store.session_id)
+        if store is not None
+        else None
+    )
+    context_manager = ContextManager(ledger, _context_limits_from_config(config))
 
     print("loading agent bundle...", file=sys.stderr)
     try:
@@ -406,7 +541,7 @@ async def _async_main(argv: list[str]) -> int:
     )
     # The agent's Nix definition owns its persona; the config default is a fallback.
     system_prompt = manifest.system_prompt or config.system_prompt
-    loop = AgentLoop(provider, broker, manifest, system_prompt)
+    loop = AgentLoop(provider, broker, manifest, system_prompt, context_manager)
 
     tool_names = ", ".join(tool["name"] for tool in manifest.tools)
     mode = "headless" if config.headless else "interactive"
@@ -421,12 +556,16 @@ async def _async_main(argv: list[str]) -> int:
     print(f"audit log: {config.audit_path}", file=sys.stderr)
     if store is not None:
         print(f"session: {store.session_id} ({store.path})", file=sys.stderr)
+    if ledger is not None:
+        print(f"context ledger: {ledger.path}", file=sys.stderr)
 
     prompt = " ".join(argv).strip()
     try:
         if prompt:
-            return await _run_one_shot(loop, prompt, messages, store, registry, notices)
-        return await _run_repl(loop, messages, store, registry, notices)
+            return await _run_one_shot(
+                loop, prompt, messages, store, ledger, registry, notices
+            )
+        return await _run_repl(loop, messages, store, ledger, registry, notices)
     finally:
         registry.shutdown_all()
 

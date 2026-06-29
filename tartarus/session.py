@@ -98,11 +98,20 @@ class SessionStore:
         self._flushed = len(messages)
         return messages
 
-    def append(self, messages: list[dict]) -> None:
-        """Persist any messages added since the last flush."""
+    @property
+    def flushed_count(self) -> int:
+        return self._flushed
+
+    def append(self, messages: list[dict]) -> int | None:
+        """Persist any messages added since the last flush.
+
+        Returns the first appended message index, or None when there was no new
+        tail to write.
+        """
         tail = messages[self._flushed :]
         if not tail:
-            return
+            return None
+        start_index = self._flushed
         if self._dir:
             os.makedirs(self._dir, exist_ok=True)
         try:
@@ -112,6 +121,7 @@ class SessionStore:
         except OSError as error:
             raise SessionError(f"cannot write session {self._path}: {error}") from error
         self._flushed = len(messages)
+        return start_index
 
     def first_user_message(self) -> str | None:
         """First user-authored text in the session, for listing previews."""

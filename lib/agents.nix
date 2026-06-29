@@ -125,6 +125,11 @@ let
     || grant.writable != [ ]
     || grant.unrestricted;
 
+  reservedCapabilityNames = [
+    "context_status"
+    "context_read"
+  ];
+
   capabilityType = {
     options = {
       description = lib.mkOption {
@@ -197,6 +202,10 @@ let
   capabilityAssertions =
     name: capability:
     [
+      {
+        assertion = !(lib.elem name reservedCapabilityNames);
+        message = "Tartarus capability '${name}' uses a reserved internal tool name.";
+      }
       {
         assertion = !(capability.grants.unrestricted && capability.policy == "auto");
         message = "Tartarus capability '${name}' cannot combine unrestricted = true with policy = \"auto\".";

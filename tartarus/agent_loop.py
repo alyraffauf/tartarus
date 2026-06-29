@@ -15,6 +15,7 @@ import asyncio
 from dataclasses import dataclass
 
 from tartarus.broker import Broker
+from tartarus.context import CONTEXT_TOOL_NAMES, CONTEXT_TOOLS, ContextManager
 from tartarus.manifest import Manifest
 from tartarus.models import (
     TextDelta,
@@ -48,11 +49,13 @@ class AgentLoop:
         broker: Broker,
         manifest: Manifest,
         system_prompt: str,
+        context_manager: ContextManager | None = None,
     ):
         self._provider = provider
         self._broker = broker
         self._manifest = manifest
         self._system_prompt = system_prompt
+        self._context_manager = context_manager or ContextManager()
 
     async def run_turn(self, messages: list[dict]):
         """Drive one human turn to completion, yielding UI events as they happen.
@@ -65,8 +68,9 @@ class AgentLoop:
         while True:
             text_parts: list[str] = []
             turn = None
+            effective_messages = self._context_manager.effective_messages(messages)
             async for event in self._provider.stream(
-                self._system_prompt, messages, self._manifest.tools
+                self._system_prompt, effective_messages, self._tools()
             ):
                 if isinstance(event, TextDelta):
                     text_parts.append(event.text)
@@ -86,7 +90,7 @@ class AgentLoop:
             for call in turn.tool_calls:
                 yield ToolStarted(call)
                 result = None
-                async for tool_event in self._run_tool(call):
+                async for tool_event in self._run_tool(call, messages):
                     if isinstance(tool_event, ToolOutputDelta):
                         yield tool_event
                     else:
@@ -100,7 +104,17 @@ class AgentLoop:
             messages.append(assistant_message)
             messages.extend(self._provider.tool_result_messages(results))
 
-    async def _run_tool(self, call: ToolCall):
+    async def _run_tool(self, call: ToolCall, messages: list[dict]):
+        # Context tools only inspect local context state — no host reach to gate —
+        # so they answer here directly, bypassing the broker/jail/policy/audit path.
+        if call.name in CONTEXT_TOOL_NAMES:
+            yield ToolResult(
+                call.id,
+                self._context_manager.handle_tool(call.name, call.arguments, messages),
+                is_error=False,
+            )
+            return
+
         output_queue: asyncio.Queue[str] = asyncio.Queue()
 
         # The broker runs on this loop, so streamed output lands on the queue
@@ -142,3 +156,6 @@ class AgentLoop:
         finally:
             if pending_get is not None:
                 pending_get.cancel()
+
+    def _tools(self) -> list[dict]:
+        return [*self._manifest.tools, *CONTEXT_TOOLS]

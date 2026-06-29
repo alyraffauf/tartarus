@@ -190,6 +190,7 @@ example agent is in `agent.nix`.
 A capability declares:
 
 - the attrset key as its name, plus `description` and model-facing `params`
+  (`context_status` and `context_read` are reserved for internal context tools)
 - `policy`: `auto`, `ask-once`, `ask-always`, or `deny`
 - `grants.packages`: package binaries available only to that tool
 - `grants.network.allowedHosts`: proxy-allowed HTTP(S) hosts

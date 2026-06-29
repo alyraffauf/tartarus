@@ -6,6 +6,7 @@ from typing import cast
 
 from tartarus.agent_loop import AgentLoop, ToolFinished, ToolStarted
 from tartarus.broker import Broker
+from tartarus.context import ContextLedger, ContextLimits, ContextManager
 from tartarus.jail import ExecResult, JailBuilder
 from tartarus.models import (
     AssistantTurn,
@@ -46,6 +47,7 @@ class ScriptedProvider:
     def __init__(self, turns: list[AssistantTurn]):
         self._turns = list(turns)
         self.received_results: list = []
+        self.received_messages: list[list[dict]] = []
 
     async def complete(
         self, system: str, messages: list[dict], tools: list[dict]
@@ -55,6 +57,7 @@ class ScriptedProvider:
     async def stream(
         self, system: str, messages: list[dict], tools: list[dict]
     ) -> AsyncIterator[StreamEvent]:
+        self.received_messages.append(list(messages))
         turn = self._turns.pop(0)
         if turn.text:
             yield TextDelta(turn.text)
@@ -368,6 +371,88 @@ def test_loop_survives_unknown_tool_call():
     assert len(finished) == 1
     assert finished[0].result.is_error
     assert "unknown tool" in finished[0].result.output
+
+
+def test_loop_sends_effective_messages_without_mutating_raw_transcript(tmp_path):
+    manifest = echo_manifest()
+    ledger = ContextLedger(str(tmp_path), "s1")
+    ledger.append_event(
+        {
+            "type": "context_summary",
+            "covered": {"start": 0, "end": 2},
+            "summary": "Earlier work was completed.",
+            "source": "deterministic-local",
+            "estimated_chars": 29,
+        }
+    )
+    provider = ScriptedProvider(
+        [
+            AssistantTurn(
+                text="done",
+                tool_calls=[],
+                raw={"role": "assistant"},
+                stop_reason="end",
+            )
+        ]
+    )
+    loop = AgentLoop(
+        provider,
+        Broker(manifest, cast(JailBuilder, LocalJail()), PolicyEngine()),
+        manifest,
+        "system",
+        ContextManager(ledger, ContextLimits(max_chars=10_000, recent_turns=1)),
+    )
+    messages = [
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "old reply"},
+        {"role": "user", "content": "new"},
+    ]
+
+    asyncio.run(_drain(loop, messages))
+
+    assert provider.received_messages[0][0]["role"] == "system"
+    assert "Earlier work" in provider.received_messages[0][0]["content"]
+    assert provider.received_messages[0][1:] == [{"role": "user", "content": "new"}]
+    assert messages == [
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "old reply"},
+        {"role": "user", "content": "new"},
+        {"role": "assistant", "content": "done"},
+    ]
+
+
+def test_loop_handles_context_status_as_internal_tool(tmp_path):
+    manifest = echo_manifest()
+    provider = ScriptedProvider(
+        [
+            AssistantTurn(
+                text=None,
+                tool_calls=[ToolCall("call-1", "context_status", {})],
+                raw={"role": "assistant"},
+                stop_reason="tool_calls",
+            ),
+            AssistantTurn(
+                text="I checked context.",
+                tool_calls=[],
+                raw={"role": "assistant"},
+                stop_reason="end",
+            ),
+        ]
+    )
+    loop = AgentLoop(
+        provider,
+        Broker(manifest, cast(JailBuilder, LocalJail()), PolicyEngine()),
+        manifest,
+        "system",
+        ContextManager(ContextLedger(str(tmp_path), "s1")),
+    )
+    messages = [{"role": "user", "content": "status"}]
+
+    events = asyncio.run(_drain(loop, messages))
+
+    assert _text(events) == "I checked context."
+    assert len(provider.received_results) == 1
+    assert '"message_count": 1' in provider.received_results[0].output
 
 
 def test_loop_brokers_multiple_parallel_tool_calls():

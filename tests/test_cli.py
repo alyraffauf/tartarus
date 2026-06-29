@@ -11,6 +11,7 @@ from tartarus.cli import (
     _bundle_manifest_source,
     _parse_agent_selector,
     _parse_session_flags,
+    _print_context_status,
     _run_one_shot,
 )
 from tartarus.config import ConfigError
@@ -76,6 +77,13 @@ def test_parse_session_flags_no_session_and_list():
     assert flags.list_sessions is True
 
 
+def test_parse_session_flags_context_commands():
+    flags, _ = _parse_session_flags(["--context-status"])
+    assert flags.context_status is True
+    flags, _ = _parse_session_flags(["--compact-context"])
+    assert flags.compact_context is True
+
+
 def test_parse_session_flags_resume_without_id_errors():
     with pytest.raises(ConfigError, match="--resume requires"):
         _parse_session_flags(["--resume"])
@@ -123,6 +131,29 @@ def test_print_session_list_reports_unreadable_dir(tmp_path, capsys):
     assert "warning: could not list sessions" in captured.err
 
 
+def test_print_context_status_uses_latest_session_without_api_key(
+    tmp_path, monkeypatch, capsys
+):
+    from tartarus.session import SessionStore
+
+    monkeypatch.setenv("TARTARUS_WORK_TREE", str(tmp_path))
+    session_dir = tmp_path / ".tartarus" / "sessions"
+    SessionStore(str(session_dir), "s1").append(
+        [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+    )
+
+    result = _print_context_status(SessionFlags())
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert "session: s1" in captured.out
+    assert "messages: 2" in captured.out
+    assert "ledger events: 0" in captured.out
+
+
 def test_run_one_shot_returns_one_when_background_reaction_fails(monkeypatch):
     """A provider-level failure while reacting to a completion yields exit code 1."""
 
@@ -136,7 +167,7 @@ def test_run_one_shot_returns_one_when_background_reaction_fails(monkeypatch):
     async def fake_send(_loop, _messages, _text):
         return True
 
-    async def fake_drain(_loop, _messages, _store, _notices):
+    async def fake_drain(_loop, _messages, _store, _ledger, _notices):
         state["running"] = False
         return False
 
@@ -155,6 +186,7 @@ def test_run_one_shot_returns_one_when_background_reaction_fails(monkeypatch):
             loop,
             "prompt",
             [],
+            None,
             None,
             cast(BackgroundRegistry, FakeRegistry()),
             asyncio.Queue(),

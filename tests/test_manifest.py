@@ -1,6 +1,9 @@
+import pytest
+
 from tartarus.manifest import (
     Capability,
     Grant,
+    Manifest,
     Param,
     _RESERVED_SHELL_ENV_NAMES,
     build_manifest,
@@ -86,3 +89,26 @@ def test_deny_capabilities_are_not_projected_into_tools():
     tool_names = [tool["name"] for tool in manifest.tools]
     assert tool_names == ["open"]
     assert "locked" in manifest.capabilities
+
+
+@pytest.mark.parametrize("reserved_name", ["context_status", "context_read"])
+def test_reserved_context_capability_names_are_rejected(reserved_name):
+    with pytest.raises(ValueError, match=f"'{reserved_name}' is reserved"):
+        Capability(
+            name=reserved_name,
+            description="reserved",
+            policy="auto",
+            params={},
+            grants=Grant(),
+            runner="true",
+        )
+
+
+def test_reserved_context_tool_names_are_rejected_without_capability():
+    with pytest.raises(ValueError, match="'context_status' is reserved"):
+        Manifest(
+            tools=[{"name": "context_status", "description": "", "parameters": {}}],
+            capabilities={},
+            ca_bundle_file="/nix/store/cacert/etc/ssl/certs/ca-bundle.crt",
+            shell_closure_file="/nix/store/shell-closure/store-paths",
+        )
