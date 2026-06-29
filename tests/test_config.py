@@ -4,15 +4,18 @@ import pytest
 
 from tartarus.config import (
     API_KEY_ENV_VARS,
+    DEFAULT_AUTO_COMPACT,
     DEFAULT_BASE_URL,
     DEFAULT_MAX_TOKENS,
     DEFAULT_MODEL,
     Config,
     ConfigError,
     load_config,
+    resolve_context,
     resolve_runtime,
 )
-from tartarus.manifest import Manifest, ModelConfig
+from tartarus.context import DEFAULT_CONTEXT_MAX_CHARS, DEFAULT_CONTEXT_RECENT_TURNS
+from tartarus.manifest import ContextConfig, Manifest, ModelConfig
 
 
 @pytest.fixture(autouse=True)
@@ -140,3 +143,45 @@ def test_resolve_runtime_env_overrides_manifest_model():
     assert runtime.base_url == "https://env.example/v1"
     assert runtime.model == "env-model"
     assert runtime.max_tokens == 2048
+
+
+def test_resolve_context_falls_back_to_defaults():
+    # Neither env nor manifest declares a policy: built-in defaults apply.
+    context = resolve_context(Config(api_key="secret"), _manifest())
+
+    assert context.max_chars == DEFAULT_CONTEXT_MAX_CHARS
+    assert context.recent_turns == DEFAULT_CONTEXT_RECENT_TURNS
+    assert context.auto_compact is DEFAULT_AUTO_COMPACT
+
+
+def test_resolve_context_uses_manifest_block_over_defaults():
+    manifest = _manifest(
+        context=ContextConfig(max_chars=5000, recent_turns=3, auto_compact=True),
+    )
+
+    context = resolve_context(Config(api_key="secret"), manifest)
+
+    assert context.max_chars == 5000
+    assert context.recent_turns == 3
+    assert context.auto_compact is True
+
+
+def test_resolve_context_env_overrides_manifest_block_per_field():
+    # An explicit env value wins per field; unset fields fall to the manifest.
+    config = Config(api_key="secret", context_max_chars=9999)
+    manifest = _manifest(
+        context=ContextConfig(max_chars=5000, recent_turns=3, auto_compact=True),
+    )
+
+    context = resolve_context(config, manifest)
+
+    assert context.max_chars == 9999  # env wins
+    assert context.recent_turns == 3  # manifest fills the rest
+    assert context.auto_compact is True
+
+
+def test_resolve_context_rejects_negative_env_value():
+    config = Config(api_key="secret", context_recent_turns=-1)
+
+    with pytest.raises(ConfigError, match="recentTurns must be non-negative"):
+        resolve_context(config, _manifest())

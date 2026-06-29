@@ -1,4 +1,4 @@
-"""BackgroundRegistry: track detached capability runs (PLAN.md §6.9).
+"""BackgroundRegistry: track detached capability runs.
 
 A capability declared `kind = "background"` is launched detached by the jail and
 handed here. The registry assigns it a short id (`bg-1`, `bg-2`, …), tails its

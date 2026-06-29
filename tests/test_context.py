@@ -187,3 +187,52 @@ def test_deterministic_summary_mentions_tool_calls_and_results():
 
     assert "tool call: bash" in summary
     assert "tool result 2 (call-1): ok" in summary
+
+
+def _wordy_messages(turns: int) -> list[dict]:
+    messages: list[dict] = []
+    for index in range(turns):
+        messages.append({"role": "user", "content": f"question {index} " + "x" * 200})
+        messages.append(
+            {"role": "assistant", "content": f"answer {index} " + "y" * 200}
+        )
+    return messages
+
+
+def test_maybe_compact_is_noop_when_auto_compact_disabled(tmp_path):
+    ledger = ContextLedger(str(tmp_path), "s1")
+    manager = ContextManager(ledger, ContextLimits(max_chars=10, recent_turns=1))
+
+    assert manager.maybe_compact(_wordy_messages(5)) is None
+    assert ledger.load_events() == []
+
+
+def test_maybe_compact_is_noop_under_limit(tmp_path):
+    ledger = ContextLedger(str(tmp_path), "s1")
+    manager = ContextManager(
+        ledger,
+        ContextLimits(max_chars=1_000_000, recent_turns=1),
+        auto_compact=True,
+    )
+
+    assert manager.maybe_compact(_wordy_messages(5)) is None
+    assert ledger.load_events() == []
+
+
+def test_maybe_compact_compacts_once_when_over_limit(tmp_path):
+    ledger = ContextLedger(str(tmp_path), "s1")
+    manager = ContextManager(
+        ledger,
+        ContextLimits(max_chars=500, recent_turns=1),
+        auto_compact=True,
+    )
+    messages = _wordy_messages(5)
+
+    event = manager.maybe_compact(messages)
+    assert event is not None
+    assert event["type"] == "context_summary"
+
+    # Monotonic: a second call with the same transcript adds no new summary.
+    assert manager.maybe_compact(messages) is None
+    summaries = [e for e in ledger.load_events() if e["type"] == "context_summary"]
+    assert len(summaries) == 1

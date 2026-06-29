@@ -1,4 +1,4 @@
-"""OpenAI-compatible chat-completions provider (PLAN.md §6.3).
+"""OpenAI-compatible chat-completions provider.
 
 Targets POST {base_url}/chat/completions, which serves OpenCode Zen, OpenAI,
 Together, local Ollama/llama.cpp/vLLM, and most gateways. Uses raw HTTP via httpx

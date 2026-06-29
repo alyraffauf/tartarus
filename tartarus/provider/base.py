@@ -1,4 +1,4 @@
-"""The Provider protocol (PLAN.md §6.3).
+"""The Provider protocol.
 
 The AgentLoop talks to providers in provider-neutral terms; each concrete provider
 adapts to exactly one wire format. Completion is async so the harness can drive the

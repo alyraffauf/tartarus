@@ -1,4 +1,4 @@
-"""Manifest validation (§5). Pure contract checks over decoded manifest JSON.
+"""Manifest validation. Pure contract checks over decoded manifest JSON.
 
 The manifest is loaded from a realized agent bundle by `tartarus.bundle`; this
 module holds the validation. `build_manifest_from_raw` is pure — it takes the
@@ -140,6 +140,8 @@ def _map_manifest_raw(raw: dict[str, Any]) -> dict[str, Any]:
         mapped["system_prompt"] = raw["systemPrompt"]
     if "model" in raw:
         mapped["model"] = _map_model_raw(raw["model"])
+    if "context" in raw:
+        mapped["context"] = _map_context_raw(raw["context"])
     return mapped
 
 
@@ -206,6 +208,29 @@ def _map_model_raw(raw: object) -> dict[str, Any]:
         if key in body:
             mapped[key] = body[key]
 
+    return mapped
+
+
+_KNOWN_CONTEXT_KEYS = frozenset({"maxChars", "recentTurns", "autoCompact"})
+
+
+def _map_context_raw(raw: object) -> dict[str, Any]:
+    body = _require_object(raw, "manifest 'context'")
+
+    unknown_keys = sorted(set(body) - _KNOWN_CONTEXT_KEYS)
+    if unknown_keys:
+        raise ManifestError(
+            "manifest 'context' has unsupported keys: " + ", ".join(unknown_keys)
+        )
+
+    mapped: dict[str, Any] = {}
+    for json_key, py_key in (
+        ("maxChars", "max_chars"),
+        ("recentTurns", "recent_turns"),
+        ("autoCompact", "auto_compact"),
+    ):
+        if json_key in body:
+            mapped[py_key] = body[json_key]
     return mapped
 
 

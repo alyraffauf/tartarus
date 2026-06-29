@@ -1,4 +1,4 @@
-"""Append-only JSONL persistence for conversation transcripts (PLAN.md §10).
+"""Append-only JSONL persistence for conversation transcripts.
 
 A session is the provider-native `messages` list the AgentLoop maintains. The loop
 only ever appends to it, and only at whole-round-trip boundaries, so a session

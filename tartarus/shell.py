@@ -1,7 +1,7 @@
 """Minimal shell-path helper for tests and ad-hoc store resolution.
 
 The harness no longer resolves a live shell: an agent's baseline PATH is baked
-into its bundle manifest (`shellPath`) at build time (PLAN.md §14). What remains
+into its bundle manifest (`shellPath`) at build time. What remains
 here is `resolve_minimal_shell_path`, used by the jail integration tests to build
 a small PATH from named packages.
 """

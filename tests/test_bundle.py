@@ -1,4 +1,4 @@
-"""Bundle loading (PLAN.md §14): build/locate a bundle, read it with no nix."""
+"""Bundle loading: build/locate a bundle, read it with no nix."""
 
 import json
 import shutil

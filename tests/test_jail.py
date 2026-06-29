@@ -1,4 +1,4 @@
-"""Integration tests for the bwrap jail (PLAN.md §11).
+"""Integration tests for the bwrap jail.
 
 These require Linux with `bwrap` and `nix` present, so they skip elsewhere. They
 prove the security invariants: confinement, content purity, and reach
@@ -175,7 +175,7 @@ def test_host_only_tool_is_absent_inside_jail(tmp_path, shell_path, shell_closur
 def test_ungranted_tool_unreachable_by_absolute_store_path(
     tmp_path, shell_path, shell_closure
 ):
-    # The store-bind purity gap (PLAN.md §13): with the whole store mounted, an
+    # The store-bind purity gap: with the whole store mounted, an
     # un-granted binary was reachable by absolute path. Now only the closure is
     # bound, so git's own store path does not exist inside the jail even though
     # its dependencies (bash, coreutils) are part of the shell closure.

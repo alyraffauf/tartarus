@@ -11,13 +11,16 @@ from tartarus.cli import (
     _bundle_manifest_source,
     _parse_agent_selector,
     _parse_session_flags,
+    _persist_and_compact,
     _print_context_status,
     _run_one_shot,
 )
 from tartarus.config import ConfigError
+from tartarus.context import ContextLedger, ContextLimits, ContextManager
 from tartarus.jail import JailBuilder
 from tartarus.policy import PolicyEngine
 from tartarus.provider.base import Provider
+from tartarus.session import SessionStore
 from tests.manifest_fixtures import echo_manifest
 
 
@@ -152,6 +155,36 @@ def test_print_context_status_uses_latest_session_without_api_key(
     assert "session: s1" in captured.out
     assert "messages: 2" in captured.out
     assert "ledger events: 0" in captured.out
+
+
+def test_persist_and_compact_writes_summary_after_transcript_events(tmp_path):
+    store = SessionStore(str(tmp_path / "sessions"), "s1")
+    ledger = ContextLedger(str(tmp_path / "context"), "s1")
+    manager = ContextManager(
+        ledger,
+        ContextLimits(max_chars=500, recent_turns=1),
+        auto_compact=True,
+    )
+    loop = AgentLoop(
+        provider=cast(Provider, None),
+        broker=Broker(echo_manifest(), cast(JailBuilder, None), PolicyEngine()),
+        manifest=echo_manifest(),
+        system_prompt="test",
+        context_manager=manager,
+    )
+    messages = []
+    for index in range(5):
+        messages.append({"role": "user", "content": f"question {index} " + "x" * 200})
+        messages.append(
+            {"role": "assistant", "content": f"answer {index} " + "y" * 200}
+        )
+
+    _persist_and_compact(loop, store, ledger, messages)
+
+    events = ledger.load_events()
+    assert events[-1]["type"] == "context_summary"
+    assert [event["message_index"] for event in events[:-1]] == list(range(10))
+    assert events[-1]["covered"] == {"start": 0, "end": 8}
 
 
 def test_run_one_shot_returns_one_when_background_reaction_fails(monkeypatch):

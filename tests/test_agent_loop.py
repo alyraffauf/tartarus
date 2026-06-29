@@ -421,6 +421,41 @@ def test_loop_sends_effective_messages_without_mutating_raw_transcript(tmp_path)
     ]
 
 
+def test_loop_does_not_auto_compact_before_provider_call(tmp_path):
+    manifest = echo_manifest()
+    ledger = ContextLedger(str(tmp_path), "s1")
+    provider = ScriptedProvider(
+        [
+            AssistantTurn(
+                text="done",
+                tool_calls=[],
+                raw={"role": "assistant"},
+                stop_reason="end",
+            )
+        ]
+    )
+    loop = AgentLoop(
+        provider,
+        Broker(manifest, cast(JailBuilder, LocalJail()), PolicyEngine()),
+        manifest,
+        "system",
+        ContextManager(
+            ledger,
+            ContextLimits(max_chars=100, recent_turns=1),
+            auto_compact=True,
+        ),
+    )
+    messages = [
+        {"role": "user", "content": "old " + "x" * 200},
+        {"role": "assistant", "content": "old reply " + "y" * 200},
+        {"role": "user", "content": "new " + "z" * 200},
+    ]
+
+    asyncio.run(_drain(loop, messages))
+
+    assert [event["type"] for event in ledger.load_events()] == []
+
+
 def test_loop_handles_context_status_as_internal_tool(tmp_path):
     manifest = echo_manifest()
     provider = ScriptedProvider(

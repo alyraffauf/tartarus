@@ -1,4 +1,4 @@
-"""PolicyEngine: gate each tool call per its capability's policy (PLAN.md §6.6).
+"""PolicyEngine: gate each tool call per its capability's policy.
 
 - auto         → allow without asking.
 - ask-once     → prompt the first time this session, then remember (keyed by name).
@@ -8,7 +8,7 @@
 The prompt shows the human the exact delta being requested — the capability, its
 grant deltas, and the interpolated command — and requires an explicit y/N,
 defaulting to No. In headless mode there is no human, so every ask-* policy denies
-(fail closed, PLAN.md §8.4).
+(fail closed).
 """
 
 import sys

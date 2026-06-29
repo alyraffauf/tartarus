@@ -1,4 +1,4 @@
-"""Load an agent from a realized bundle (PLAN.md §14).
+"""Load an agent from a realized bundle.
 
 A bundle is one store derivation whose runtime closure is the whole agent:
 `manifest.json` plus every store path it references (package bins, per-capability

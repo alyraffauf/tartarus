@@ -1,4 +1,4 @@
-"""The Broker: resolve → validate → policy → build jail → exec → result (§6.5).
+"""The Broker: resolve → validate → policy → build jail → exec → result.
 
 Each tool call is validated, gated by the PolicyEngine (which may prompt the
 human), then run inside a bwrap jail via the injected JailBuilder. Argument
@@ -62,7 +62,7 @@ def interpolate(runner: str, arguments: dict) -> str:
     """Fill a runner template's {placeholders}, shell-escaping every value.
 
     Every model-supplied value is passed through shlex.quote so untrusted text can
-    never break out of its argument position (PLAN.md §8.5).
+    never break out of its argument position.
     """
     safe_values = defaultdict(
         lambda: shlex.quote(""),

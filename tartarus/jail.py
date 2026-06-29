@@ -1,4 +1,4 @@
-"""The JailBuilder: bwrap confinement for brokered commands (PLAN.md §6.7).
+"""The JailBuilder: bwrap confinement for brokered commands.
 
 Builds a JailSpec from a capability grant and executes the command inside
 bubblewrap. The jail binds only the declared shell and capability closures
@@ -272,7 +272,7 @@ class JailBuilder:
             self._bwrap_path,
             # Only this call's closure is visible, read-only — not the whole
             # store. bwrap synthesizes the /nix/store parent, so the in-jail
-            # store contains exactly the bound closure (PLAN.md §13).
+            # store contains exactly the bound closure.
             *_store_bind_args(spec.bind_paths),
             *self._work_tree_bind_args(spec),
             *self._writable_bind_args(spec),

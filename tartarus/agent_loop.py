@@ -1,4 +1,4 @@
-"""The provider-agnostic agent loop (PLAN.md §6.4).
+"""The provider-agnostic agent loop.
 
 The loop never branches on which provider is configured: it streams a turn from
 the provider, forwards text to the caller as it arrives, brokers any tool calls,
@@ -159,3 +159,6 @@ class AgentLoop:
 
     def _tools(self) -> list[dict]:
         return [*self._manifest.tools, *CONTEXT_TOOLS]
+
+    def auto_compact(self, messages: list[dict]) -> None:
+        self._context_manager.maybe_compact(messages)

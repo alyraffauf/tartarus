@@ -174,6 +174,12 @@ example agent is in `agent.nix`.
               sampling = { temperature = 0.6; };
             };
 
+            context = {
+              maxChars = 120000;
+              recentTurns = 20;
+              autoCompact = false;
+            };
+
             capabilities.read_package_json = {
               description = "Read package.json from the work tree.";
               policy = "auto";
@@ -217,13 +223,19 @@ not collide. It defaults to `agent` otherwise.
 coding set: `read`, `list`, `glob`, `grep`, `write`, `edit`, `bash`, and `webFetch`.
 Single-capability modules are available if you want to assemble a narrower agent.
 
+The optional `context` block declares the agent's context policy: `maxChars` (soft
+ceiling on effective context size), `recentTurns` (recent user turns always kept
+verbatim), and `autoCompact` (deterministically compact at a turn boundary once over
+`maxChars`; defaults to off so compaction stays an explicit, visible action). Any
+field left unset falls back to an env override or the built-in default.
+
 ## Configuration
 
-Backend settings can come from the environment or from the agent's `model` block.
-Precedence is per field:
+Backend and context settings can come from the environment or from the agent's
+`model` / `context` blocks. Precedence is per field:
 
 ```text
-explicit env var > agent model field > built-in default
+explicit env var > agent model/context field > built-in default
 ```
 
 API keys and extra request headers are environment-only.
@@ -243,6 +255,9 @@ API keys and extra request headers are environment-only.
 | `TARTARUS_HEADLESS` | `false` | Make `ask-*` policies fail closed |
 | `TARTARUS_AUDIT_PATH` | `<work_tree>/.tartarus/audit.jsonl` | Audit log path |
 | `TARTARUS_SESSIONS_DIR` | `<work_tree>/.tartarus/sessions` | Session transcript directory |
+| `TARTARUS_CONTEXT_DIR` | `<work_tree>/.tartarus/context` | Per-session context ledger directory |
+| `TARTARUS_CONTEXT_MAX_CHARS` | `120000` | Soft ceiling on effective context size, in characters |
+| `TARTARUS_CONTEXT_RECENT_TURNS` | `20` | Recent user turns always kept verbatim |
 | `TARTARUS_OUTPUT_TRUNCATE` | `10000` | Tool output truncation limit in characters |
 
 To use a local OpenAI-compatible server:
@@ -280,7 +295,6 @@ decision, grant delta, command, exit code, output length, and errors.
 | `tartarus/` | Python harness: config, bundle loading, provider, loop, broker, jail |
 | `templates/default/` | `nix flake init -t` starter for a new agents flake |
 | `tests/` | Unit and integration tests |
-| `PLAN.md` | Architecture, contract details, and implementation history |
 
 ## Development
 

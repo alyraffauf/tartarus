@@ -24,6 +24,7 @@ from tartarus.config import (
     ResolvedRuntime,
     context_dir_from_env,
     load_config,
+    resolve_context,
     resolve_runtime,
     session_dir_from_env,
 )
@@ -170,21 +171,37 @@ def _persist(
     store: SessionStore | None,
     ledger: ContextLedger | None,
     messages: list[dict],
-) -> None:
+) -> bool:
     """Flush newly committed messages, warning (not failing) on write errors."""
     if store is None:
-        return
+        return False
     try:
         start_index = store.append(messages)
     except SessionError as error:
         print(f"warning: could not save session: {error}", file=sys.stderr)
-        return
+        return False
     if start_index is None or ledger is None:
-        return
+        return True
     try:
         ledger.append_message_events(messages, start_index)
     except ContextError as error:
         print(f"warning: could not save context ledger: {error}", file=sys.stderr)
+        return False
+    return True
+
+
+def _persist_and_compact(
+    loop: AgentLoop,
+    store: SessionStore | None,
+    ledger: ContextLedger | None,
+    messages: list[dict],
+) -> None:
+    if not _persist(store, ledger, messages):
+        return
+    try:
+        loop.auto_compact(messages)
+    except ContextError as error:
+        print(f"warning: could not compact context: {error}", file=sys.stderr)
 
 
 async def _run_one_shot(
@@ -198,7 +215,7 @@ async def _run_one_shot(
 ) -> int:
     try:
         if await _send(loop, messages, prompt):
-            _persist(store, ledger, messages)
+            _persist_and_compact(loop, store, ledger, messages)
         # A one-shot run that launched background work waits it out, reacting to
         # each completion, so the task is not killed the instant the turn ends.
         failed = False
@@ -256,7 +273,7 @@ async def _run_repl(
             continue
         try:
             if await _send(loop, messages, user_text):
-                _persist(store, ledger, messages)
+                _persist_and_compact(loop, store, ledger, messages)
         except ProviderError as error:
             print(f"provider error: {error}", file=sys.stderr)
 
@@ -300,7 +317,7 @@ async def _react_to_notice(
     print(f"\n  [background] {notice.task_id} finished (exit {notice.exit_code})")
     try:
         if await _send(loop, messages, text):
-            _persist(store, ledger, messages)
+            _persist_and_compact(loop, store, ledger, messages)
             return True
         return False
     except ProviderError as error:
@@ -358,10 +375,6 @@ def _context_limits_from_env() -> ContextLimits:
         _int_from_env("TARTARUS_CONTEXT_MAX_CHARS", None),
         _int_from_env("TARTARUS_CONTEXT_RECENT_TURNS", None),
     )
-
-
-def _context_limits_from_config(config: Config) -> ContextLimits:
-    return _context_limits(config.context_max_chars, config.context_recent_turns)
 
 
 def _int_from_env(name: str, default: int | None) -> int | None:
@@ -489,7 +502,6 @@ async def _async_main(argv: list[str]) -> int:
         if store is not None
         else None
     )
-    context_manager = ContextManager(ledger, _context_limits_from_config(config))
 
     print("loading agent bundle...", file=sys.stderr)
     try:
@@ -503,14 +515,22 @@ async def _async_main(argv: list[str]) -> int:
         print(f"startup error: {error}", file=sys.stderr)
         return 1
 
-    # The provider binding is resolved only after the manifest loads, so the
-    # agent's declared profile can supply the model/base_url (config.py §9).
+    # Provider and context bindings are resolved only after the manifest loads,
+    # so the agent's declared profile can supply them, with an
+    # explicit env value still winning per field.
     try:
         runtime = resolve_runtime(config, manifest)
         provider = _build_provider(runtime)
+        context = resolve_context(config, manifest)
     except ConfigError as error:
         print(f"configuration error: {error}", file=sys.stderr)
         return 1
+
+    context_manager = ContextManager(
+        ledger,
+        ContextLimits(max_chars=context.max_chars, recent_turns=context.recent_turns),
+        auto_compact=context.auto_compact,
+    )
 
     jail = JailBuilder(
         config.work_tree,

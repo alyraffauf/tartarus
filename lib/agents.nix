@@ -93,6 +93,30 @@ let
     };
   };
 
+  contextType = types.submodule {
+    options = {
+      maxChars = lib.mkOption {
+        type = types.nullOr (types.addCheck types.int (n: n >= 0));
+        default = null;
+        description = "Soft ceiling on effective context size, in characters.";
+      };
+      recentTurns = lib.mkOption {
+        type = types.nullOr (types.addCheck types.int (n: n >= 0));
+        default = null;
+        description = "Number of recent user turns always kept verbatim.";
+      };
+      autoCompact = lib.mkOption {
+        type = types.nullOr types.bool;
+        default = null;
+        description = ''
+          When true, compact deterministically at a turn boundary once the
+          effective context exceeds maxChars. Defaults to off so compaction
+          stays an explicit, visible action.
+        '';
+      };
+    };
+  };
+
   paramType = types.submodule {
     options = {
       type = lib.mkOption {
@@ -306,6 +330,11 @@ let
           type = types.nullOr modelType;
           default = null;
         };
+        context = lib.mkOption {
+          type = types.nullOr contextType;
+          default = null;
+          description = "Optional context policy; null fields fall back to harness defaults.";
+        };
         shell = {
           packages = lib.mkOption {
             type = types.listOf types.package;
@@ -400,6 +429,11 @@ let
         }
         // lib.optionalAttrs (config.systemPrompt != null) { inherit (config) systemPrompt; }
         // lib.optionalAttrs (config.model != null) { inherit (config) model; }
+        // lib.optionalAttrs (config.context != null) {
+          # Emit only the fields the agent set; null fields stay absent so the
+          # harness applies env override or built-in default (resolve_context).
+          context = lib.filterAttrs (_: value: value != null) config.context;
+        }
         // lib.optionalAttrs (hookDrv != null) { shellHook = "${hookDrv}"; };
       # Mirrored in tartarus/manifest.py (_RESERVED_SHELL_ENV_NAMES); the two
       # must stay in sync. Drift is silent except for the Python pin test

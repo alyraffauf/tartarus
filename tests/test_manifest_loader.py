@@ -11,7 +11,7 @@ from tartarus.manifest_loader import (
 
 
 def _valid_raw():
-    """A minimal manifest that satisfies every §5 rule."""
+    """A minimal manifest that satisfies every validation rule."""
     return {
         "tools": [
             {
@@ -259,6 +259,54 @@ def test_model_extra_headers_are_rejected():
         build_manifest_from_raw(raw)
 
 
+# --- context block ----------------------------------------------------------
+
+
+def test_context_block_absent_leaves_context_none():
+    # Optional, like the model block; absent means defaults/env supply the limits.
+    assert build_manifest_from_raw(_valid_raw()).context is None
+
+
+def test_context_block_is_read_when_present():
+    raw = _valid_raw()
+    raw["context"] = {"maxChars": 5000, "recentTurns": 3, "autoCompact": True}
+
+    context = build_manifest_from_raw(raw).context
+
+    assert context is not None
+    assert context.max_chars == 5000
+    assert context.recent_turns == 3
+    assert context.auto_compact is True
+
+
+def test_context_block_is_partial_friendly():
+    raw = _valid_raw()
+    raw["context"] = {"recentTurns": 8}
+
+    context = build_manifest_from_raw(raw).context
+
+    assert context is not None
+    assert context.recent_turns == 8
+    assert context.max_chars is None
+    assert context.auto_compact is None
+
+
+def test_negative_context_value_is_rejected():
+    raw = _valid_raw()
+    raw["context"] = {"maxChars": -1}
+
+    with pytest.raises(ManifestError, match="non-negative"):
+        build_manifest_from_raw(raw)
+
+
+def test_unsupported_context_key_is_rejected():
+    raw = _valid_raw()
+    raw["context"] = {"summarizer": "model"}
+
+    with pytest.raises(ManifestError, match="unsupported keys: summarizer"):
+        build_manifest_from_raw(raw)
+
+
 # --- fail-closed validation -------------------------------------------------
 
 
@@ -290,9 +338,7 @@ def test_reserved_context_capability_name_is_rejected(reserved_name):
 
 def test_reserved_context_tool_name_without_capability_is_rejected():
     raw = _valid_raw()
-    raw["tools"].append(
-        {"name": "context_status", "description": "", "parameters": {}}
-    )
+    raw["tools"].append({"name": "context_status", "description": "", "parameters": {}})
 
     with pytest.raises(ManifestError, match="'context_status' is reserved"):
         build_manifest_from_raw(raw)
@@ -469,7 +515,7 @@ def test_validate_realized_package_bins_fails_when_grant_env_is_incomplete(monke
         validate_realized_package_bins(manifest)
 
 
-# --- closure resolution (PLAN.md §13) ---------------------------------------
+# --- closure resolution -----------------------------------------------------
 
 
 def test_malformed_closure_reference_is_rejected():

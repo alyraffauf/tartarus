@@ -2,7 +2,7 @@
 
 These shapes are deliberately independent of any vendor wire format. Each concrete
 Provider translates between these and its backend's request/response JSON, so the
-AgentLoop and Broker never branch on which backend is configured (PLAN.md §6.3).
+AgentLoop and Broker never branch on which backend is configured.
 """
 
 from dataclasses import dataclass

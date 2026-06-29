@@ -1,4 +1,4 @@
-"""Harness configuration, loaded from environment variables (PLAN.md §9).
+"""Harness configuration, loaded from environment variables.
 
 Provider config is the only thing that changes to switch LLM backends. API keys
 come from the environment and are never embedded in code. Defaults target OpenCode
@@ -20,6 +20,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing_extensions import Self
 
 from tartarus.constants import DEFAULT_OUTPUT_TRUNCATE_CHARS, STRICT_CONFIG
+from tartarus.context import (
+    DEFAULT_CONTEXT_MAX_CHARS,
+    DEFAULT_CONTEXT_RECENT_TURNS,
+)
 from tartarus.manifest import Manifest, Sampling
 
 DEFAULT_BASE_URL = "https://opencode.ai/zen/v1"
@@ -53,7 +57,7 @@ class ConfigError(Exception):
 
 
 class Config(BaseSettings):
-    """Harness config, loaded from TARTARUS_* environment variables (PLAN.md §9).
+    """Harness config, loaded from TARTARUS_* environment variables.
 
     Each field reads from TARTARUS_<FIELD>; a few keep legacy env names via an
     explicit alias. Runtime fields (provider/base_url/model/max_tokens) stay None
@@ -81,7 +85,7 @@ class Config(BaseSettings):
     # agent bundle when no realized `bundle_path` is given.
     flake_ref: str = DEFAULT_FLAKE_REF
     # A realized agent bundle store path (e.g. received via `nix copy`). When set,
-    # the harness loads it directly and never touches the flake (PLAN.md §14).
+    # the harness loads it directly and never touches the flake.
     bundle_path: str = Field("", validation_alias=AliasChoices("TARTARUS_BUNDLE"))
     # Agent name under #agents.<system> to load.
     agent_name: str = Field(
@@ -190,7 +194,7 @@ class ResolvedRuntime(BaseModel):
 
 
 def resolve_runtime(config: Config, manifest: Manifest) -> ResolvedRuntime:
-    """Combine env config and the agent's `model` block by precedence (§9).
+    """Combine env config and the agent's `model` block by precedence.
 
     Per field: an explicit env var wins; otherwise the agent's declared value;
     otherwise the built-in default. api_key is env-only.
@@ -217,3 +221,63 @@ def resolve_runtime(config: Config, manifest: Manifest) -> ResolvedRuntime:
         # backend applies its own default.
         sampling=model.sampling if model else None,
     )
+
+
+# Compaction stays off unless an agent opts in, so it remains an explicit,
+# visible action.
+DEFAULT_AUTO_COMPACT = False
+
+
+class ResolvedContext(BaseModel):
+    """The effective context policy for a run, after applying precedence.
+
+    Per field: an explicit env var wins; otherwise the agent's `context` block;
+    otherwise the built-in default.
+    """
+
+    model_config = STRICT_CONFIG
+
+    max_chars: int
+    recent_turns: int
+    auto_compact: bool
+
+
+def resolve_context(config: Config, manifest: Manifest) -> ResolvedContext:
+    """Combine env config and the agent's `context` block by precedence.
+
+    Mirrors resolve_runtime: an explicit env value wins, else the agent's
+    declared value, else the built-in default.
+    """
+    block = manifest.context
+    max_chars = _coalesce_int(
+        config.context_max_chars,
+        block.max_chars if block else None,
+        DEFAULT_CONTEXT_MAX_CHARS,
+    )
+    recent_turns = _coalesce_int(
+        config.context_recent_turns,
+        block.recent_turns if block else None,
+        DEFAULT_CONTEXT_RECENT_TURNS,
+    )
+    if max_chars < 0:
+        raise ConfigError("context maxChars must be non-negative")
+    if recent_turns < 0:
+        raise ConfigError("context recentTurns must be non-negative")
+    auto_compact = (
+        block.auto_compact
+        if block is not None and block.auto_compact is not None
+        else DEFAULT_AUTO_COMPACT
+    )
+    return ResolvedContext(
+        max_chars=max_chars,
+        recent_turns=recent_turns,
+        auto_compact=auto_compact,
+    )
+
+
+def _coalesce_int(env_value: int | None, block_value: int | None, default: int) -> int:
+    if env_value is not None:
+        return env_value
+    if block_value is not None:
+        return block_value
+    return default

@@ -114,9 +114,11 @@ class ContextManager:
         self,
         ledger: ContextLedger | None = None,
         limits: ContextLimits | None = None,
+        auto_compact: bool = False,
     ):
         self._ledger = ledger
         self._limits = limits or ContextLimits()
+        self._auto_compact = auto_compact
 
     @property
     def ledger_path(self) -> str | None:
@@ -183,6 +185,13 @@ class ContextManager:
         if suffix_start <= 0:
             return None
 
+        # Compaction is monotonic: never re-summarize a range the latest summary
+        # already covers, so repeated or automatic compaction appends a new
+        # summary only when it advances the covered boundary.
+        latest = latest_summary(self._load_events())
+        if latest is not None and int(latest["covered"]["end"]) >= suffix_start:
+            return None
+
         summary_text = deterministic_summary(messages[:suffix_start])
         event = {
             "type": "context_summary",
@@ -193,6 +202,22 @@ class ContextManager:
         }
         self._ledger.append_event(event)
         return event
+
+    def maybe_compact(self, messages: list[dict]) -> dict[str, Any] | None:
+        """Auto-compact at a turn boundary when the agent opts in and is over limit.
+
+        A no-op unless `autoCompact` is enabled; otherwise it compacts only when
+        the effective context already exceeds `max_chars`, reusing the
+        deterministic compactor so the result stays an explicit ledger event.
+        """
+        if not self._auto_compact or self._ledger is None:
+            return None
+        if (
+            estimate_messages(self.effective_messages(messages))
+            <= self._limits.max_chars
+        ):
+            return None
+        return self.compact(messages)
 
     def _load_events(self) -> list[dict[str, Any]]:
         if self._ledger is None:

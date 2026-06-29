@@ -82,6 +82,22 @@
           profileAgent = evalModuleAgent [
             modules.coding
           ];
+          # An agent declaring a context policy: only the set fields are emitted,
+          # so null fields stay absent for env/default resolution in the harness.
+          contextAgent = evalModuleAgent [
+            {
+              context = {
+                maxChars = 5000;
+                recentTurns = 3;
+                autoCompact = true;
+              };
+              capabilities.read_package_json = {
+                description = "Read package.json from the work tree.";
+                policy = "auto";
+                runner = "cat package.json";
+              };
+            }
+          ];
           inlineAgent = evalModuleAgent [
             {
               capabilities.read_package_json = {
@@ -113,6 +129,7 @@
               runner = "true";
               grants = "bad";
             };
+            negative-context-max-chars = evalModuleAgent [ { context.maxChars = -1; } ];
           };
 
           # Layer 2: capabilityAssertions — each case is otherwise type-valid, so
@@ -212,6 +229,15 @@
               multipleAgents.default.config.build.manifest.capabilities ? read
               && multipleAgents.research.config.build.manifest.capabilities ? web_fetch
             ) "multiple agents under agents.<system> must compile"
+            && lib.assertMsg (
+              contextAgent.config.build.manifest.context == {
+                maxChars = 5000;
+                recentTurns = 3;
+                autoCompact = true;
+              }
+              && defaultManifest ? capabilities
+              && !(defaultManifest ? context)
+            ) "context policy must be emitted only when declared, with set fields only"
             && lib.assertMsg (
               (builtins.sort builtins.lessThan defaultToolNames)
               == (builtins.sort builtins.lessThan expectedDefaultTools)

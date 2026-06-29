@@ -17,9 +17,7 @@ Two languages, one contract between them:
 - **Python side** (`tartarus/`): reads `<bundle>/manifest.json` and runs. The
   harness makes **no `nix` calls at runtime**; the manifest is the only
   bridge. Entry point is `main.py` → `tartarus.cli:main`.
-- `PLAN.md` is the authoritative design doc (architecture, manifest contract,
-  security invariants, glossary). README is the user-facing quick start. If
-  prose and code disagree, code wins.
+- README is the user-facing quick start. If prose and code disagree, code wins.
 
 ## Developer commands
 
@@ -66,7 +64,7 @@ Agent selector: `.#<name>` as the first positional arg, or `TARTARUS_AGENT`.
 
 ## Sandbox / security invariants (do not break these)
 
-From `tartarus/jail.py` and `PLAN.md §8`:
+From `tartarus/jail.py`:
 
 - Every brokered tool call runs under `bwrap --unshare-all` with only the
   declared closure's store paths bound **read-only** — never the whole

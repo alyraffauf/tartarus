@@ -132,7 +132,7 @@ class Capability(BaseModel):
     # Per-capability wall-clock budget in seconds. None means the capability runs
     # unbounded; a declared value caps it at that many seconds.
     timeout: int | None = None
-    # How the broker runs this capability (PLAN.md §6.5):
+    # How the broker runs this capability:
     #   "command"    — run in the jail, capture output, return one result (default).
     #   "background" — launch detached, return a handle; track in the registry.
     #   "control"    — operate on the background registry (see `control`); no jail.
@@ -219,7 +219,7 @@ _RESERVED_SAMPLING_KEYS = frozenset(
 
 
 class ModelConfig(BaseModel):
-    """The model an agent declares: backend binding + inference knobs (PLAN.md §9).
+    """The model an agent declares: backend binding + inference knobs.
 
     A model id is only meaningful next to the base_url that serves it, so they
     travel together alongside provider-portable inference knobs.  Secrets and
@@ -268,6 +268,33 @@ class ModelConfig(BaseModel):
         return v
 
 
+# ── ContextConfig ────────────────────────────────────────────────────────────
+
+
+class ContextConfig(BaseModel):
+    """The context policy an agent declares in Nix.
+
+    Every field is optional: a None field falls back to an explicit env override
+    or the harness built-in default (resolve_context). `autoCompact` defaults to
+    off so compaction stays an explicit, visible action unless the agent opts in.
+    """
+
+    model_config = STRICT_CONFIG
+
+    max_chars: int | None = None
+    recent_turns: int | None = None
+    auto_compact: bool | None = None
+
+    @field_validator("max_chars", "recent_turns", mode="before")
+    @classmethod
+    def _reject_negative_ints(cls, v: object) -> int | None:
+        if v is None:
+            return None
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            raise ValueError("must be a non-negative integer")
+        return v
+
+
 # ── Manifest ─────────────────────────────────────────────────────────────────
 
 
@@ -281,6 +308,9 @@ class Manifest(BaseModel):
     # The agent's model block, declared in Nix. None when the agent declares none,
     # in which case the harness defaults (or env overrides) supply everything.
     model: ModelConfig | None = None
+    # The agent's context policy, declared in Nix. None when the agent declares
+    # none, in which case env overrides or harness defaults supply the limits.
+    context: ContextConfig | None = None
     # The CA bundle path emitted by the agent flake. Exported into jailed tools
     # (base_env), and the Nix shell closure binds its store root.
     ca_bundle_file: str = ""
