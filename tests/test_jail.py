@@ -6,6 +6,7 @@ isolation.
 """
 
 import asyncio
+import os
 import shutil
 import shlex
 import subprocess
@@ -23,6 +24,12 @@ _NEEDS_SANDBOX = pytest.mark.skipif(
     shutil.which("bwrap") is None or shutil.which("nix") is None,
     reason="requires bwrap and nix",
 )
+
+# Every jailed command runs under `bash -c` (JailBuilder._shell_argv), so `bash`
+# must be resolvable on the spec's PATH. The unrestricted (host-escape) tests
+# exec on the host, so they put the host bash dir on PATH; a real agent's
+# unrestricted grant carries the shell PATH, which already includes bash.
+_HOST_BASH_DIR = os.path.dirname(shutil.which("bash") or "")
 
 
 def _exec(jail, *args, **kwargs):
@@ -160,7 +167,8 @@ def test_host_only_tool_is_absent_inside_jail(tmp_path, shell_path, shell_closur
     result = _exec(jail, jail.build(Grant()), "git --version")
 
     assert result.code != 0
-    assert "no such file" in result.stderr.lower()
+    # bash resolves the bare name on PATH and finds nothing in the closure.
+    assert "not found" in result.stderr.lower()
 
 
 @_NEEDS_SANDBOX
@@ -204,7 +212,7 @@ def test_no_network_interfaces_inside_jail(tmp_path, shell_path, shell_closure):
 
 
 def test_network_grant_builds_proxy_spec(tmp_path):
-    jail = JailBuilder(str(tmp_path), "/unused/bin")
+    jail = JailBuilder(str(tmp_path), _HOST_BASH_DIR)
     spec = jail.build(Grant(allowed_hosts=["example.com:443"]))
 
     assert spec.network == "proxy"
@@ -212,7 +220,7 @@ def test_network_grant_builds_proxy_spec(tmp_path):
 
 
 def test_proxy_jail_sets_proxy_environment(tmp_path):
-    jail = JailBuilder(str(tmp_path), "/unused/bin")
+    jail = JailBuilder(str(tmp_path), _HOST_BASH_DIR)
     spec = jail.build(Grant(allowed_hosts=["example.com:443"]))
 
     argv = jail._bwrap_argv(spec, "true", proxy_url="http://127.0.0.1:12345")
@@ -360,7 +368,7 @@ def test_unrestricted_grant_bypasses_bwrap_after_approval_path(tmp_path):
     )
     reader.chmod(0o755)
 
-    jail = JailBuilder(str(work_tree), str(bin_dir))
+    jail = JailBuilder(str(work_tree), os.pathsep.join([str(bin_dir), _HOST_BASH_DIR]))
     spec = jail.build(Grant(unrestricted=True))
 
     result = _exec(jail, spec, "read-secret")
@@ -370,7 +378,7 @@ def test_unrestricted_grant_bypasses_bwrap_after_approval_path(tmp_path):
 
 
 def test_exec_streams_unrestricted_output_lines(tmp_path):
-    jail = JailBuilder(str(tmp_path), "/unused/bin")
+    jail = JailBuilder(str(tmp_path), _HOST_BASH_DIR)
     spec = jail.build(Grant(unrestricted=True))
     lines: list[str] = []
     code = "import sys; print('one', flush=True); print('two', flush=True)"
@@ -388,7 +396,7 @@ def test_exec_streams_unrestricted_output_lines(tmp_path):
 
 
 def test_exec_streams_unrestricted_output_without_newlines(tmp_path):
-    jail = JailBuilder(str(tmp_path), "/unused/bin")
+    jail = JailBuilder(str(tmp_path), _HOST_BASH_DIR)
     spec = jail.build(Grant(unrestricted=True))
     lines: list[str] = []
     payload = ("x" * 70_000) + "é"
@@ -415,7 +423,7 @@ _SLOW_PROGRAM = (
 
 
 def test_exec_timeout_kills_unrestricted_process(tmp_path):
-    jail = JailBuilder(str(tmp_path), "/unused/bin")
+    jail = JailBuilder(str(tmp_path), _HOST_BASH_DIR)
     spec = jail.build(Grant(unrestricted=True))
 
     result = _exec(
@@ -431,7 +439,7 @@ def test_exec_timeout_kills_unrestricted_process(tmp_path):
 
 
 def test_exec_cancellation_terminates_unrestricted_process(tmp_path):
-    jail = JailBuilder(str(tmp_path), "/unused/bin")
+    jail = JailBuilder(str(tmp_path), _HOST_BASH_DIR)
     spec = jail.build(Grant(unrestricted=True))
     lines: list[str] = []
     command = f"{shlex.quote(sys.executable)} -c {shlex.quote(_SLOW_PROGRAM)}"
@@ -440,8 +448,10 @@ def test_exec_cancellation_terminates_unrestricted_process(tmp_path):
         task = asyncio.create_task(
             jail.exec(spec, command, output_callback=lines.append)
         )
-        while not lines:
+        while not lines and not task.done():
             await asyncio.sleep(0.01)
+        if task.done():
+            await task  # surface a launch failure instead of spinning forever
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
