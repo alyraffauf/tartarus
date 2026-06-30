@@ -41,26 +41,6 @@ Policies control when the model needs your approval: `auto` runs freely,
 `ask-once` asks once per session, `ask-always` asks every time, and `deny`
 hides the tool from the model.
 
-## What You Get
-
-- A realized agent bundle at `agents.<system>.<agent>.config.build.bundle` containing
-  `manifest.json`, baked shell PATH, CA bundle, and every referenced store path.
-- A provider-neutral agent loop for OpenAI-compatible backends.
-- Tool policies: `auto`, `ask-once`, `ask-always`, and `deny`.
-- Sandboxed command execution with closure-scoped `/nix/store` bindings and
-  scoped work-tree writes.
-- Optional network grants through a filtering HTTP proxy.
-- Background tools for long-running tasks, with `bg_status`, `bg_output`, and
-  `bg_stop` controls.
-- Append-only audit logs and resumable session transcripts under `.tartarus/`.
-
-The shipped `default` agent includes read/search tools, Git inspection tools,
-`jq`, scoped file editing, formatting/test commands, sealed shell commands,
-background commands, artifact writing, and scoped network examples for PyPI,
-RFCs, and approved general web fetches. Formatting (`format_nix`) rewrites
-files so it is gated with `ask-once`: approve once per session, then nixfmt
-runs freely.
-
 ## Quick Start
 
 Prerequisites:
