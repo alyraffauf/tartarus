@@ -73,9 +73,9 @@ From `tartarus/jail.py`:
   a path. Writable paths must be relative and stay under the work tree.
 - Package grants append to PATH for **that one call only**; they are not
   permanent. Network grants route through a filtering HTTP proxy with an
-  allow-list of `host:port`. **Raw TCP egress is not contained** (no network
-  namespace firewall) — that's why plain-TCP capabilities like `run_migration`
-  ship as `policy = "deny"`.
+  allow-list of `host:port`. When network grants are active the jail shares the
+  host's network namespace, so **raw TCP egress is not contained**; that is why
+  plain-TCP capabilities like `run_migration` ship as `policy = "deny"`.
 - `unrestricted = true` grants **skip bwrap entirely** after policy approval
   (the "big red button"); the manifest validator rejects `unrestricted + auto`.
 - Policies: `auto`, `ask-once`, `ask-always`, `deny`. `deny` capabilities are

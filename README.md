@@ -1,17 +1,65 @@
 # Tartarus
 
-An experimental framework for building composable, hermetic, and shareable AI agents with Nix.
+An experimental framework for building composable, hermetic, and shareable AI agents in Nix.
 
-Tartarus turns an agent definition into a runnable, sandboxed system. You
-declare the agent's tools, permissions, and policies in a Nix flake. Nix
-builds that into a self-contained bundle, and Tartarus handles the agent
-loop so that every tool call executes inside a sandbox with only the
-access declared for that tool.
+Define an agent's tools, model, permissions, and prompt the same way you configure NixOS.
+Nix compiles it into a self-contained bundle, which the harness consumes at runtime.
+A policy broker runs every tool call in a sandbox, granting only the access you declared.
 
-- Define an agent's shell, tools, model, and permissions in one Nix flake.
-- Compose tools from ordinary nixpkgs packages, granting each tool only
-  the binaries it needs so the agent never touches your host machine.
-- Share the agent as one Nix closure and run it the same way anywhere.
+- Compose tools from nixpkgs packages, granting each tool only the binaries and permissions it needs.
+- Run the agent in a sandbox with no access to the host machine except what you explicitly allow.
+- Share the agent as a single Nix closure. Copy it once and run it identically anywhere.
+- Policies (auto, ask-once, ask-always, deny) control which tools need approval and when.
+
+## What It Looks Like
+
+```nix
+capabilities.github_api = {
+  description = "Query the GitHub API through the scoped HTTP proxy.";
+  policy = "auto";
+  grants = {
+    packages = [ pkgs.curl ];
+    network.allowedHosts = [ "api.github.com:443" ];
+  };
+  runner = "curl -fsSL -H 'Accept: application/vnd.github+json' https://api.github.com{endpoint}";
+};
+
+capabilities.write_file = {
+  description = "Create or overwrite a file in the work tree.";
+  policy = "ask-once";
+  grants = {
+    packages = [ pkgs.coreutils ];
+    writable = [ "." ];
+  };
+  runner = "bash -c 'mkdir -p \"$(dirname \"$1\")\"; cat > \"$1\"' _ {path}";
+};
+```
+
+`curl` is only on PATH inside `github_api`, and it can only reach
+`api.github.com:443`. `write_file` can write files but only under the work tree.
+Policies control when the model needs your approval: `auto` runs freely,
+`ask-once` asks once per session, `ask-always` asks every time, and `deny`
+hides the tool from the model.
+
+## What You Get
+
+- A realized agent bundle at `agents.<system>.<agent>.config.build.bundle` containing
+  `manifest.json`, baked shell PATH, CA bundle, and every referenced store path.
+- A provider-neutral agent loop for OpenAI-compatible backends.
+- Tool policies: `auto`, `ask-once`, `ask-always`, and `deny`.
+- Sandboxed command execution with closure-scoped `/nix/store` bindings and
+  scoped work-tree writes.
+- Optional network grants through a filtering HTTP proxy.
+- Background tools for long-running tasks, with `bg_status`, `bg_output`, and
+  `bg_stop` controls.
+- Append-only audit logs and resumable session transcripts under `.tartarus/`.
+
+The shipped `default` agent includes read/search tools, Git inspection tools,
+`jq`, scoped file editing, formatting/test commands, sealed shell commands,
+background commands, artifact writing, and scoped network examples for PyPI,
+RFCs, and approved general web fetches. Formatting (`format_nix`) rewrites
+files so it is gated with `ask-once`: approve once per session, then nixfmt
+runs freely.
 
 ## Quick Start
 
@@ -62,26 +110,6 @@ Edit `agent.nix` to add capabilities, swap the model, or import other
 `tartarus.modules`, then re-run `tartarus`; the first run rebuilds the bundle.
 See [Defining An Agent](#defining-an-agent) for the capability schema.
 
-## What You Get
-
-- A realized agent bundle at `agents.<system>.<agent>.config.build.bundle` containing
-  `manifest.json`, baked shell PATH, CA bundle, and every referenced store path.
-- A provider-neutral agent loop for OpenAI-compatible backends.
-- Tool policies: `auto`, `ask-once`, `ask-always`, and `deny`.
-- Sandboxed command execution with closure-scoped `/nix/store` bindings and
-  scoped work-tree writes.
-- Optional network grants through a filtering HTTP proxy.
-- Background tools for long-running tasks, with `bg_status`, `bg_output`, and
-  `bg_stop` controls.
-- Append-only audit logs and resumable session transcripts under `.tartarus/`.
-
-The shipped `default` agent includes read/search tools, Git inspection tools,
-`jq`, scoped file editing, formatting/test commands, sealed shell commands,
-background commands, artifact writing, and scoped network examples for PyPI,
-RFCs, and approved general web fetches. Formatting (`format_nix`) rewrites
-files so it is gated with `ask-once`: approve once per session, then nixfmt
-runs freely.
-
 ## Running Agents
 
 Tartarus resolves the agent bundle at startup and caches nothing between runs.
@@ -93,11 +121,11 @@ The algorithm is:
 
 The three slots are:
 
-- `TARTARUS_FLAKE_REF` — the flake reference. Defaults to `path:.` (the current
+- `TARTARUS_FLAKE_REF`: the flake reference. Defaults to `path:.` (the current
   directory). Override with `github:org/repo`, `path:/some/dir`, etc.
-- `<host-system>` — derived from the host (the harness calls `nix build` for
+- `<host-system>`: derived from the host (the harness calls `nix build` for
   `x86_64-linux` or `aarch64-linux`). It is not configurable.
-- `<agent-name>` — precedence: an inline `.#<name>` selector as the first
+- `<agent-name>`: precedence: an inline `.#<name>` selector as the first
   positional argument wins over `TARTARUS_AGENT`, which wins over `default`.
 
 The inline selector is a harness CLI convention (parsed after `nix run .#tartarus --`),
@@ -285,22 +313,29 @@ nix run .#tartarus -- --no-session "one-off"
 Every brokered tool call appends one JSONL audit record, including policy
 decision, grant delta, command, exit code, output length, and errors.
 
-## Repository Map
+## Limitations
 
-| Path | Purpose |
-|---|---|
-| `agent.nix` | Example agent and capabilities |
-| `agent-modules/` | Reusable agent modules exposed as `tartarus.modules` |
-| `lib/agents.nix` | Nix compiler for `agents.<system>.<agent>.config.build.bundle` |
-| `tartarus/` | Python harness: config, bundle loading, provider, loop, broker, jail |
-| `templates/default/` | `nix flake init -t` starter for a new agents flake |
-| `tests/` | Unit and integration tests |
+Tartarus makes tradeoffs that matter to some workflows:
+
+- **Linux only.** The sandbox uses `bubblewrap`, which is Linux-specific. You can
+  build agent bundles on macOS but cannot run the jail there.
+- **Network sandboxing is proxy-based, not a firewall.** When a tool has network
+  grants, the jail shares the host's network namespace and filters traffic through
+  an HTTP proxy. Raw TCP connections (non-HTTP protocols, direct socket calls) are
+  not contained. Without network grants the jail has no network at all.
+- **OpenAI-compatible backends only.** The harness ships a single provider adapter
+  for OpenAI-compatible chat completions. Anthropic, Gemini, and other vendor APIs
+  are not supported.
+- **Tools run one at a time.** Within a turn, tool calls are sequential. The model
+  cannot dispatch parallel reads, searches, or background tasks in a single
+  response.
+- **`unrestricted` skips the sandbox entirely.** An unrestricted grant runs the
+  command directly on the host, with host filesystem and environment access. The
+  manifest validator rejects `unrestricted + auto`, but an approved unrestricted
+  call is a full escape.
 
 ## Development
 
 The repo is developed from the `nix develop` shell, which supplies Python and
 pytest for hacking on the harness. The packaged `tartarus` binary is exposed by
 the `tartarus` flake output, not by this dev shell.
-
-See `AGENTS.md` for the developer workflow: running tests, lint, typecheck, and
-the dev-shell Python commands.
