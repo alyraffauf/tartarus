@@ -129,13 +129,47 @@
               runner = "true";
               grants = "bad";
             };
+            empty-model-name = evalModuleAgent [
+              {
+                model.name = "";
+                capabilities.ok = {
+                  policy = "auto";
+                  runner = "true";
+                };
+              }
+            ];
             negative-context-max-chars = evalModuleAgent [ { context.maxChars = -1; } ];
           };
 
-          # Layer 2: capabilityAssertions — each case is otherwise type-valid, so
-          # it can only fail via the one capability rule it names. Every rule has a
-          # case here.
+          # Layer 2: contract assertions — each case is otherwise type-valid, so
+          # it can only fail via the explicit rule it names. Every capability
+          # rule has a case here, alongside model rules that mirror Python.
           validationFailureAgents = {
+            undeclared-runner-param = badCap {
+              policy = "auto";
+              params.message = {
+                type = "string";
+                required = true;
+              };
+              runner = "echo {message} {missing}";
+            };
+            mismatched-param-enum = badCap {
+              policy = "auto";
+              params.flag = {
+                type = "boolean";
+                enum = [ "yes" ];
+              };
+              runner = "true";
+            };
+            reserved-model-sampling-key = evalModuleAgent [
+              {
+                model.sampling.model = 1;
+                capabilities.ok = {
+                  policy = "auto";
+                  runner = "true";
+                };
+              }
+            ];
             unrestricted-auto = badCap {
               policy = "auto";
               runner = "true";

@@ -6,6 +6,8 @@
 let
   inherit (lib) types;
 
+  nonEmptyString = types.addCheck types.str (value: value != "");
+
   paramSchema =
     param:
     {
@@ -71,15 +73,15 @@ let
   modelType = types.submodule {
     options = {
       provider = lib.mkOption {
-        type = types.nullOr types.str;
+        type = types.nullOr nonEmptyString;
         default = null;
       };
       baseUrl = lib.mkOption {
-        type = types.nullOr types.str;
+        type = types.nullOr nonEmptyString;
         default = null;
       };
       name = lib.mkOption {
-        type = types.nullOr types.str;
+        type = types.nullOr nonEmptyString;
         default = null;
       };
       maxTokens = lib.mkOption {
@@ -142,6 +144,109 @@ let
     };
   };
 
+  enumEntryMatchesParam =
+    param: entry:
+    if param.type == "string" then
+      builtins.isString entry
+    else if param.type == "integer" then
+      builtins.isInt entry && !builtins.isBool entry
+    else if param.type == "boolean" then
+      builtins.isBool entry
+    else if param.type == "array" then
+      builtins.isList entry
+    else
+      false;
+
+  paramEnumMatchesType =
+    param: param.enum == null || lib.all (enumEntryMatchesParam param) param.enum;
+
+  runnerPlaceholders =
+    runner:
+    let
+      isPlaceholderStart = char: builtins.match "[A-Za-z_]" char != null;
+      isPlaceholderChar = char: builtins.match "[A-Za-z0-9_]" char != null;
+      nextChar = chars: if chars == [ ] then null else builtins.head chars;
+      remainingChars = chars: if chars == [ ] then [ ] else builtins.tail chars;
+
+      skipUntilClosingBrace =
+        chars:
+        if chars == [ ] then
+          [ ]
+        else if builtins.head chars == "}" then
+          builtins.tail chars
+        else
+          skipUntilClosingBrace (builtins.tail chars);
+
+      readPlaceholderName =
+        chars: name:
+        if chars == [ ] then
+          {
+            name = null;
+            rest = [ ];
+          }
+        else
+          let
+            char = builtins.head chars;
+            rest = builtins.tail chars;
+          in
+          if char == "}" then
+            {
+              inherit name rest;
+            }
+          else if char == ":" || char == "!" then
+            {
+              inherit name;
+              rest = skipUntilClosingBrace rest;
+            }
+          else if isPlaceholderChar char then
+            readPlaceholderName rest (name + char)
+          else
+            {
+              name = null;
+              rest = skipUntilClosingBrace rest;
+            };
+
+      readPlaceholder =
+        chars:
+        if chars == [ ] || !isPlaceholderStart (builtins.head chars) then
+          {
+            name = null;
+            rest = chars;
+          }
+        else
+          readPlaceholderName (builtins.tail chars) (builtins.head chars);
+
+      parse =
+        chars:
+        if chars == [ ] then
+          [ ]
+        else
+          let
+            char = builtins.head chars;
+            rest = builtins.tail chars;
+            followingChar = nextChar rest;
+            afterFollowingChar = remainingChars rest;
+          in
+          if char == "{" && followingChar == "{" then
+            parse afterFollowingChar
+          else if char == "}" && followingChar == "}" then
+            parse afterFollowingChar
+          else if char == "{" then
+            let
+              placeholder = readPlaceholder rest;
+            in
+            lib.optional (placeholder.name != null) placeholder.name ++ parse placeholder.rest
+          else
+            parse rest;
+    in
+    if runner == null then [ ] else parse (lib.stringToCharacters runner);
+
+  runnerPlaceholdersAreDeclared =
+    capability:
+    lib.all (placeholder: builtins.hasAttr placeholder capability.params) (
+      runnerPlaceholders capability.runner
+    );
+
   grantOpensReach =
     grant:
     grant.packages != [ ]
@@ -152,6 +257,15 @@ let
   reservedCapabilityNames = [
     "context_status"
     "context_read"
+  ];
+
+  reservedSamplingKeys = [
+    "model"
+    "max_tokens"
+    "messages"
+    "stream"
+    "tools"
+    "tool_choice"
   ];
 
   capabilityType = {
@@ -223,46 +337,52 @@ let
   # rule list (assertion + message) per capability; the `assertions` option
   # aggregates them and build outputs check them lazily via `assertWarn`.
   # Standard NixOS shape, so downstream modules can contribute their own.
-  capabilityAssertions =
-    name: capability:
-    [
-      {
-        assertion = !(lib.elem name reservedCapabilityNames);
-        message = "Tartarus capability '${name}' uses a reserved internal tool name.";
-      }
-      {
-        assertion = !(capability.grants.unrestricted && capability.policy == "auto");
-        message = "Tartarus capability '${name}' cannot combine unrestricted = true with policy = \"auto\".";
-      }
-      {
-        assertion = capability.kind != "background" || capability.timeout == null;
-        message = "Tartarus background capability '${name}' cannot declare timeout.";
-      }
-      {
-        assertion = capability.kind != "background" || !capability.grants.unrestricted;
-        message = "Tartarus background capability '${name}' cannot be unrestricted.";
-      }
-      {
-        assertion = capability.kind != "control" || capability.control != null;
-        message = "Tartarus control capability '${name}' must declare control.";
-      }
-      {
-        assertion = capability.kind == "control" || capability.control == null;
-        message = "Tartarus capability '${name}' can declare control only when kind = \"control\".";
-      }
-      {
-        assertion = capability.kind != "control" || capability.runner == null;
-        message = "Tartarus control capability '${name}' must not declare runner.";
-      }
-      {
-        assertion = capability.kind != "control" || !grantOpensReach capability.grants;
-        message = "Tartarus control capability '${name}' must not declare grants.";
-      }
-      {
-        assertion = capability.kind == "control" || capability.runner != null;
-        message = "Tartarus capability '${name}' must declare runner.";
-      }
-    ];
+  capabilityAssertions = name: capability: [
+    {
+      assertion = lib.all paramEnumMatchesType (lib.attrValues capability.params);
+      message = "Tartarus capability '${name}' has param enum entries that do not match their declared type.";
+    }
+    {
+      assertion = runnerPlaceholdersAreDeclared capability;
+      message = "Tartarus capability '${name}' runner references an undeclared param.";
+    }
+    {
+      assertion = !(lib.elem name reservedCapabilityNames);
+      message = "Tartarus capability '${name}' uses a reserved internal tool name.";
+    }
+    {
+      assertion = !(capability.grants.unrestricted && capability.policy == "auto");
+      message = "Tartarus capability '${name}' cannot combine unrestricted = true with policy = \"auto\".";
+    }
+    {
+      assertion = capability.kind != "background" || capability.timeout == null;
+      message = "Tartarus background capability '${name}' cannot declare timeout.";
+    }
+    {
+      assertion = capability.kind != "background" || !capability.grants.unrestricted;
+      message = "Tartarus background capability '${name}' cannot be unrestricted.";
+    }
+    {
+      assertion = capability.kind != "control" || capability.control != null;
+      message = "Tartarus control capability '${name}' must declare control.";
+    }
+    {
+      assertion = capability.kind == "control" || capability.control == null;
+      message = "Tartarus capability '${name}' can declare control only when kind = \"control\".";
+    }
+    {
+      assertion = capability.kind != "control" || capability.runner == null;
+      message = "Tartarus control capability '${name}' must not declare runner.";
+    }
+    {
+      assertion = capability.kind != "control" || !grantOpensReach capability.grants;
+      message = "Tartarus control capability '${name}' must not declare grants.";
+    }
+    {
+      assertion = capability.kind == "control" || capability.runner != null;
+      message = "Tartarus capability '${name}' must declare runner.";
+    }
+  ];
 
   # A trimmed subset of NixOS's `nixpkgs` module: an agent (or any of its
   # modules) configures its package set declaratively, and every module receives
@@ -309,6 +429,90 @@ let
 
       config._module.args.pkgs = cfg.pkgs;
     };
+
+  shellEnvReservedNames = [
+    "BASH_ENV"
+    "HOME"
+    "LANG"
+    "LC_ALL"
+    "PATH"
+    "SSL_CERT_FILE"
+    "NIX_SSL_CERT_FILE"
+    "CURL_CA_BUNDLE"
+    "REQUESTS_CA_BUNDLE"
+  ];
+
+  isValidShellEnvName =
+    name:
+    let
+      upper = lib.toUpper name;
+    in
+    builtins.match "^[A-Za-z_][A-Za-z0-9_]*$" name != null
+    && !(lib.elem upper shellEnvReservedNames)
+    && !(lib.hasSuffix "_PROXY" upper)
+    && !(lib.hasPrefix "TARTARUS_" upper);
+
+  modelAssertions =
+    model:
+    lib.optionals (model != null) [
+      {
+        assertion =
+          model.sampling == null
+          || lib.intersectLists reservedSamplingKeys (lib.attrNames model.sampling) == [ ];
+        message = "Tartarus model.sampling contains reserved request body keys.";
+      }
+    ];
+
+  compileAgentManifest =
+    {
+      capabilities,
+      config,
+      grantInfo,
+      hookDrv,
+      pkgs,
+      shellClosureDrv,
+      shellRootList,
+    }:
+    compileManifest grantInfo capabilities
+    // {
+      caBundle = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+      shellClosure = "${shellClosureDrv}/store-paths";
+      shellPath = lib.concatStringsSep ":" (lib.unique (map (root: "${root}/bin") shellRootList));
+      shellEnv = config.shell.env;
+    }
+    // lib.optionalAttrs (config.systemPrompt != null) { inherit (config) systemPrompt; }
+    // lib.optionalAttrs (config.model != null) { inherit (config) model; }
+    // lib.optionalAttrs (config.context != null) {
+      # Emit only the fields the agent set; null fields stay absent so the
+      # harness applies env override or built-in default (resolve_context).
+      context = lib.filterAttrs (_: value: value != null) config.context;
+    }
+    // lib.optionalAttrs (hookDrv != null) { shellHook = "${hookDrv}"; };
+
+  buildAgentBundle =
+    {
+      config,
+      grantInfo,
+      manifest,
+      pkgs,
+      shellClosureDrv,
+    }:
+    pkgs.runCommand "tartarus-${config.name}-bundle"
+      {
+        manifestJson = builtins.toJSON manifest;
+        passAsFile = [ "manifestJson" ];
+        grantClosures = map (info: info.closure) (lib.attrValues grantInfo);
+      }
+      ''
+        mkdir -p "$out/closures"
+        cp "$manifestJsonPath" "$out/manifest.json"
+        ln -s ${shellClosureDrv} "$out/closures/shell"
+        n=0
+        for closure in $grantClosures; do
+          ln -s "$closure" "$out/closures/grant-$n"
+          n=$((n + 1))
+        done
+      '';
 
   agentModule =
     { pkgs, config, ... }:
@@ -389,9 +593,9 @@ let
         };
       };
 
-      config.assertions = lib.concatLists (
-        lib.mapAttrsToList capabilityAssertions config.capabilities
-      );
+      config.assertions =
+        lib.concatLists (lib.mapAttrsToList capabilityAssertions config.capabilities)
+        ++ modelAssertions config.model;
     };
 
   # The agent's build outputs, living in the module graph at `config.build.*` —
@@ -419,45 +623,17 @@ let
       hookDrv = lib.mapNullable (pkgs.writeText "tartarus-shell-hook") config.shell.hook;
       shellRoots = shellRootList ++ [ pkgs.cacert ] ++ lib.optional (hookDrv != null) hookDrv;
       shellClosureDrv = pkgs.closureInfo { rootPaths = shellRoots; };
-      compiledManifest =
-        compileManifest grantInfo capabilities
-        // {
-          caBundle = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-          shellClosure = "${shellClosureDrv}/store-paths";
-          shellPath = lib.concatStringsSep ":" (lib.unique (map (root: "${root}/bin") shellRootList));
-          shellEnv = config.shell.env;
-        }
-        // lib.optionalAttrs (config.systemPrompt != null) { inherit (config) systemPrompt; }
-        // lib.optionalAttrs (config.model != null) { inherit (config) model; }
-        // lib.optionalAttrs (config.context != null) {
-          # Emit only the fields the agent set; null fields stay absent so the
-          # harness applies env override or built-in default (resolve_context).
-          context = lib.filterAttrs (_: value: value != null) config.context;
-        }
-        // lib.optionalAttrs (hookDrv != null) { shellHook = "${hookDrv}"; };
-      # Mirrored in tartarus/manifest.py (_RESERVED_SHELL_ENV_NAMES); the two
-      # must stay in sync. Drift is silent except for the Python pin test
-      # test_reserved_shell_env_names_canonical — update both when editing this.
-      shellEnvReservedNames = [
-        "BASH_ENV"
-        "HOME"
-        "LANG"
-        "LC_ALL"
-        "PATH"
-        "SSL_CERT_FILE"
-        "NIX_SSL_CERT_FILE"
-        "CURL_CA_BUNDLE"
-        "REQUESTS_CA_BUNDLE"
-      ];
-      isValidShellEnvName =
-        name:
-        let
-          upper = lib.toUpper name;
-        in
-        builtins.match "^[A-Za-z_][A-Za-z0-9_]*$" name != null
-        && !(lib.elem upper shellEnvReservedNames)
-        && !(lib.hasSuffix "_PROXY" upper)
-        && !(lib.hasPrefix "TARTARUS_" upper);
+      compiledManifest = compileAgentManifest {
+        inherit
+          capabilities
+          config
+          grantInfo
+          hookDrv
+          pkgs
+          shellClosureDrv
+          shellRootList
+          ;
+      };
       assertWarn =
         result:
         let
@@ -505,24 +681,15 @@ let
           }
         );
 
-        bundle = assertWarn (
-          pkgs.runCommand "tartarus-${config.name}-bundle"
-            {
-              manifestJson = builtins.toJSON compiledManifest;
-              passAsFile = [ "manifestJson" ];
-              closures = [ shellClosureDrv ] ++ map (info: info.closure) (lib.attrValues grantInfo);
-            }
-            ''
-              mkdir -p "$out/closures"
-              cp "$manifestJsonPath" "$out/manifest.json"
-              ln -s ${shellClosureDrv} "$out/closures/shell"
-              n=0
-              for closure in $closures; do
-                ln -s "$closure" "$out/closures/grant-$n"
-                n=$((n + 1))
-              done
-            ''
-        );
+        bundle = assertWarn (buildAgentBundle {
+          inherit
+            config
+            grantInfo
+            pkgs
+            shellClosureDrv
+            ;
+          manifest = compiledManifest;
+        });
       };
     };
 
