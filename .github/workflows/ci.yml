@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: astral-sh/setup-uv@v10.3.0
       - run: uv run ruff check .
       - run: uv run ty check
 
@@ -23,9 +23,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: DeterminateSystems/magic-nix-cache-action@v14
-      - uses: astral-sh/setup-uv@v8.2.0
+      - uses: DeterminateSystems/nix-installer-action@v23
+      - uses: DeterminateSystems/magic-nix-cache-action@v15
+      - uses: astral-sh/setup-uv@v10.3.0
       - run: nix flake check
       - run: uv run pytest
       - run: nix build .#tartarus --no-link --print-out-paths
@@ -34,6 +34,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: DeterminateSystems/nix-installer-action@v23
+      - uses: DeterminateSystems/magic-nix-cache-action@v15
       - run: nix build .#agents.x86_64-linux.default.config.build.bundle --no-link --print-out-paths
