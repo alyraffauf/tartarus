@@ -2,6 +2,7 @@ import asyncio
 from typing import cast
 
 import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 from tartarus.agent_loop import AgentLoop
@@ -128,6 +129,7 @@ def test_cli_rejects_invalid_options_before_startup(argv, message, cli_calls):
 
 def test_cli_help_does_not_start_runtime(cli_calls):
     result = CliRunner().invoke(app, ["--help"])
+    output = Text.from_ansi(result.output).plain
 
     assert result.exit_code == 0
     for option in (
@@ -138,8 +140,8 @@ def test_cli_help_does_not_start_runtime(cli_calls):
         "--context-status",
         "--compact-context",
     ):
-        assert option in result.output
-    assert ".#AGENT" in result.output
+        assert option in output
+    assert ".#AGENT" in output
     assert cli_calls == []
 
 
