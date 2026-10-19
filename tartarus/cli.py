@@ -12,6 +12,9 @@ import os
 import signal
 import sys
 from dataclasses import dataclass
+from typing import Annotated
+
+import typer
 
 from tartarus.agent_loop import AgentLoop, ToolFinished, ToolStarted
 from tartarus.audit import FileAuditLog
@@ -37,6 +40,9 @@ from tartarus.provider.openai_compat import OpenAICompatProvider, ProviderError
 from tartarus.session import SessionError, SessionStore
 
 
+app = typer.Typer(pretty_exceptions_enable=False)
+
+
 @dataclass
 class SessionFlags:
     """How the user wants the session resolved (parsed from argv)."""
@@ -47,40 +53,6 @@ class SessionFlags:
     list_sessions: bool = False  # --list-sessions: print and exit
     context_status: bool = False  # --context-status: print status and exit
     compact_context: bool = False  # --compact-context: compact current session and exit
-
-
-def _parse_session_flags(argv: list[str]) -> tuple[SessionFlags, list[str]]:
-    """Strip session flags from argv, leaving the selector/prompt arguments.
-
-    Hand-parsed (no argparse) to coexist with the `.#agent` selector and the
-    freeform one-shot prompt.
-    """
-    flags = SessionFlags()
-    rest: list[str] = []
-    i = 0
-    while i < len(argv):
-        arg = argv[i]
-        if arg == "--continue":
-            flags.continue_latest = True
-        elif arg == "--no-session":
-            flags.disabled = True
-        elif arg == "--list-sessions":
-            flags.list_sessions = True
-        elif arg == "--context-status":
-            flags.context_status = True
-        elif arg == "--compact-context":
-            flags.compact_context = True
-        elif arg == "--resume":
-            if i + 1 >= len(argv):
-                raise ConfigError("--resume requires a session id")
-            flags.resume = argv[i + 1]
-            i += 1
-        elif arg.startswith("--resume="):
-            flags.resume = arg[len("--resume=") :]
-        else:
-            rest.append(arg)
-        i += 1
-    return flags, rest
 
 
 def _parse_agent_selector(argv: list[str]) -> tuple[str | None, list[str]]:
@@ -471,13 +443,7 @@ def _open_session(
     return store, messages
 
 
-async def _async_main(argv: list[str]) -> int:
-    try:
-        session_flags, argv = _parse_session_flags(argv)
-    except ConfigError as error:
-        print(f"configuration error: {error}", file=sys.stderr)
-        return 1
-
+async def _async_main(argv: list[str], session_flags: SessionFlags) -> int:
     # Listing is read-only and needs no API key, so handle it before load_config.
     if session_flags.list_sessions:
         _print_session_list(session_dir_from_env())
@@ -590,6 +556,55 @@ async def _async_main(argv: list[str]) -> int:
         registry.shutdown_all()
 
 
-def main(argv: list[str] | None = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
-    return asyncio.run(_async_main(argv))
+@app.command()
+def run(
+    prompt: Annotated[
+        list[str] | None,
+        typer.Argument(
+            metavar="[.#AGENT] [PROMPT]...",
+            help=(
+                "Optional .#agent selector followed by a prompt. "
+                "Omit the prompt for the REPL."
+            ),
+        ),
+    ] = None,
+    resume: Annotated[
+        str | None,
+        typer.Option("--resume", help="Resume a session by its ID or a unique prefix."),
+    ] = None,
+    continue_latest: Annotated[
+        bool, typer.Option("--continue", help="Resume the most recent session.")
+    ] = False,
+    no_session: Annotated[
+        bool, typer.Option("--no-session", help="Run without persisting a session.")
+    ] = False,
+    list_sessions: Annotated[
+        bool, typer.Option("--list-sessions", help="List saved sessions and exit.")
+    ] = False,
+    context_status: Annotated[
+        bool,
+        typer.Option(
+            "--context-status", help="Show context status for a saved session and exit."
+        ),
+    ] = False,
+    compact_context: Annotated[
+        bool,
+        typer.Option(
+            "--compact-context", help="Compact context for a saved session and exit."
+        ),
+    ] = False,
+) -> None:
+    """Run a Nix-defined agent with a one-shot prompt or an interactive REPL."""
+    flags = SessionFlags(
+        resume=resume,
+        continue_latest=continue_latest,
+        disabled=no_session,
+        list_sessions=list_sessions,
+        context_status=context_status,
+        compact_context=compact_context,
+    )
+    raise typer.Exit(asyncio.run(_async_main(prompt or [], flags)))
+
+
+def main(argv: list[str] | None = None) -> None:
+    app(args=argv, prog_name="tartarus")

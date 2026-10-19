@@ -2,6 +2,7 @@ import asyncio
 from typing import cast
 
 import pytest
+from typer.testing import CliRunner
 
 from tartarus.agent_loop import AgentLoop
 from tartarus.background import BackgroundRegistry
@@ -10,10 +11,11 @@ from tartarus.cli import (
     SessionFlags,
     _bundle_manifest_source,
     _parse_agent_selector,
-    _parse_session_flags,
     _persist_and_compact,
     _print_context_status,
     _run_one_shot,
+    app,
+    main,
 )
 from tartarus.config import ConfigError
 from tartarus.context import ContextLedger, ContextLimits, ContextManager
@@ -54,48 +56,129 @@ def test_parse_agent_selector_rejects_empty_name():
         _parse_agent_selector([".#"])
 
 
-def test_parse_session_flags_extracts_continue_and_leaves_prompt():
-    flags, rest = _parse_session_flags(["--continue", "what", "did", "I", "ask"])
-    assert flags.continue_latest is True
-    assert rest == ["what", "did", "I", "ask"]
+@pytest.fixture
+def cli_calls(monkeypatch):
+    calls = []
+
+    async def fake_main(argv, flags):
+        calls.append((argv, flags))
+        return 0
+
+    monkeypatch.setattr("tartarus.cli._async_main", fake_main)
+    return calls
 
 
-def test_parse_session_flags_extracts_resume_id():
-    flags, rest = _parse_session_flags([".#default", "--resume", "20260627-1200", "go"])
-    assert flags.resume == "20260627-1200"
-    # The selector and prompt survive untouched for downstream parsing.
-    assert rest == [".#default", "go"]
+@pytest.mark.parametrize(
+    ("argv", "expected_prompt", "expected_flags"),
+    [
+        ([], [], SessionFlags()),
+        ([".#research"], [".#research"], SessionFlags()),
+        (["just", "a", "prompt"], ["just", "a", "prompt"], SessionFlags()),
+        (
+            ["--continue", "what", "did", "I", "ask"],
+            ["what", "did", "I", "ask"],
+            SessionFlags(continue_latest=True),
+        ),
+        (
+            [".#default", "--resume", "20260627-1200", "go"],
+            [".#default", "go"],
+            SessionFlags(resume="20260627-1200"),
+        ),
+        (["--resume=abc123"], [], SessionFlags(resume="abc123")),
+        (["--no-session"], [], SessionFlags(disabled=True)),
+        (["--list-sessions"], [], SessionFlags(list_sessions=True)),
+        (["--context-status"], [], SessionFlags(context_status=True)),
+        (["--compact-context"], [], SessionFlags(compact_context=True)),
+        (
+            [".#default", "inspect", "--no-session", "README.md"],
+            [".#default", "inspect", "README.md"],
+            SessionFlags(disabled=True),
+        ),
+        (
+            ["--", ".#research", "explain", "--continue", "--verbose"],
+            [".#research", "explain", "--continue", "--verbose"],
+            SessionFlags(),
+        ),
+        (["explain --verbose"], ["explain --verbose"], SessionFlags()),
+    ],
+)
+def test_cli_parses_options_and_prompt(
+    argv, expected_prompt, expected_flags, cli_calls
+):
+    result = CliRunner().invoke(app, argv)
+
+    assert result.exit_code == 0, result.output
+    assert cli_calls == [(expected_prompt, expected_flags)]
 
 
-def test_parse_session_flags_accepts_resume_equals_form():
-    flags, rest = _parse_session_flags(["--resume=abc123"])
-    assert flags.resume == "abc123"
-    assert rest == []
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (["--resume"], "requires an argument"),
+        (["--no-sesion"], "No such option"),
+    ],
+)
+def test_cli_rejects_invalid_options_before_startup(argv, message, cli_calls):
+    result = CliRunner().invoke(app, argv)
+
+    assert result.exit_code == 2
+    assert message in result.output
+    assert cli_calls == []
 
 
-def test_parse_session_flags_no_session_and_list():
-    flags, _ = _parse_session_flags(["--no-session"])
-    assert flags.disabled is True
-    flags, _ = _parse_session_flags(["--list-sessions"])
-    assert flags.list_sessions is True
+def test_cli_help_does_not_start_runtime(cli_calls):
+    result = CliRunner().invoke(app, ["--help"])
+
+    assert result.exit_code == 0
+    for option in (
+        "--resume",
+        "--continue",
+        "--no-session",
+        "--list-sessions",
+        "--context-status",
+        "--compact-context",
+    ):
+        assert option in result.output
+    assert ".#AGENT" in result.output
+    assert cli_calls == []
 
 
-def test_parse_session_flags_context_commands():
-    flags, _ = _parse_session_flags(["--context-status"])
-    assert flags.context_status is True
-    flags, _ = _parse_session_flags(["--compact-context"])
-    assert flags.compact_context is True
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_main_propagates_runtime_exit_code(exit_code, monkeypatch):
+    async def fake_main(argv, flags):
+        return exit_code
+
+    monkeypatch.setattr("tartarus.cli._async_main", fake_main)
+    with pytest.raises(SystemExit) as error:
+        main([])
+    assert error.value.code == exit_code
 
 
-def test_parse_session_flags_resume_without_id_errors():
-    with pytest.raises(ConfigError, match="--resume requires"):
-        _parse_session_flags(["--resume"])
+@pytest.mark.parametrize(
+    ("option", "expected_output"),
+    [
+        ("--list-sessions", "s1  hi"),
+        ("--context-status", "messages: 2"),
+        ("--compact-context", "compaction: nothing to compact"),
+    ],
+)
+def test_cli_inspects_sessions_without_loading_config(
+    option, expected_output, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("TARTARUS_WORK_TREE", str(tmp_path))
 
+    def unexpected_load_config():
+        pytest.fail("session inspection must not load API configuration")
 
-def test_parse_session_flags_default_is_inert():
-    flags, rest = _parse_session_flags(["just", "a", "prompt"])
-    assert flags == SessionFlags()
-    assert rest == ["just", "a", "prompt"]
+    monkeypatch.setattr("tartarus.cli.load_config", unexpected_load_config)
+    SessionStore(str(tmp_path / ".tartarus" / "sessions"), "s1").append(
+        [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
+    )
+
+    result = CliRunner().invoke(app, [option])
+
+    assert result.exit_code == 0, result.output
+    assert expected_output in result.stdout
 
 
 def test_print_session_list_empty_dir(tmp_path, capsys):

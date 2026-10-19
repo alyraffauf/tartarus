@@ -66,6 +66,13 @@ Assistant text, tool starts/finishes, and foreground command output stream live.
 Ctrl-C cancels the in-flight turn, tears down any running jailed process, and
 returns to the prompt without corrupting the transcript.
 
+Show all CLI options with `nix run .#tartarus -- --help` or `tartarus --help`.
+To include bare words that start with `-` in a prompt, put `--` before the prompt:
+
+```sh
+nix run .#tartarus -- -- explain --verbose
+```
+
 ## Start Your Own Agent
 
 To build your own agent instead of running this repo, scaffold a fresh flake
